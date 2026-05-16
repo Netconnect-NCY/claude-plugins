@@ -1,0 +1,26 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "netconnect",
+  "owner": {
+    "name": "Netconnect-NCY",
+    "url": "https://github.com/Netconnect-NCY"
+  },
+  "metadata": {
+    "description": "NetConnect's Claude Code plugins — opinionated tooling for building, deploying, and operating NCI services."
+  },
+  "plugins": [
+    {
+      "name": "golden-path",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Netconnect-NCY/golden-path",
+        "path": "./plugin"
+      },
+      "description": "Walk a project through the NetConnect Golden Path's 10 checkpoints. Orchestrator skill + per-checkpoint skills + /golden-path:start slash command. Use to bootstrap a new NCI repo or add a single capability (Bunnyshell deploy, MCP, Keycloak SSO, etc.) to an existing one.",
+      "homepage": "https://github.com/Netconnect-NCY/golden-path",
+      "repository": "https://github.com/Netconnect-NCY/golden-path",
+      "category": "bootstrap",
+      "tags": ["nci", "golden-path", "bootstrap", "checkpoints", "bunnyshell", "keycloak", "mcp"]
+    }
+  ]
+}
