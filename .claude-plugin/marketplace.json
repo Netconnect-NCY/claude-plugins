@@ -21,6 +21,19 @@
       "repository": "https://github.com/Netconnect-NCY/golden-path",
       "category": "bootstrap",
       "tags": ["nci", "golden-path", "bootstrap", "checkpoints", "bunnyshell", "keycloak", "mcp"]
+    },
+    {
+      "name": "network-operations",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
+        "path": "./claude-plugin"
+      },
+      "description": "Investigation-first network operations through the ssh-fleet MCP. Adaptive depth (L0 lookup to L5 fleet-wide), competing hypotheses, contradiction handling, specialist subagents, and a change lifecycle (plan, approve, verify) that never turns an anomaly into a production change. Triggers on connectivity, routing, firewall/ACL, VPN, SIP/SBC, DNS, monitoring-gap and 'push/restart this' requests.",
+      "homepage": "https://github.com/Netconnect-NCY/ssh-fleet-mcp/tree/main/claude-plugin",
+      "repository": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
+      "category": "operations",
+      "tags": ["nci", "network", "ssh-fleet", "incident", "change-management", "telephony"]
     }
   ]
 }
