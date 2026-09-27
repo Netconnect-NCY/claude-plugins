@@ -30,6 +30,33 @@ Walks a project through the [NetConnect Golden Path](https://github.com/Netconne
 
 Source: [`Netconnect-NCY/golden-path`](https://github.com/Netconnect-NCY/golden-path) (plugin lives under `./plugin/`).
 
+### `network-operations`
+
+Teaches Claude to work as a careful network engineer through the **ssh-fleet MCP**:
+- it investigates before it changes anything;
+- it adjusts investigation depth to the problem;
+- it keeps competing hypotheses and resolves contradictions;
+- it plans each change with blast radius, pre-checks, rollback and approval, then
+  verifies the change against the original symptom.
+
+**Provides:** the `network-operations:network-operations` skill. It triggers on
+"X can't reach Y", firewall/ACL, VPN, SIP/SBC, routing, monitoring gaps, or any "push/restart
+this on prod" request. You can also call it explicitly.
+
+**Requires:** the ssh-fleet MCP, connected with your own identity:
+
+```bash
+claude mcp add --transport http --client-id ssh-fleet-cli -s user ssh-fleet https://mcp.ssh-fleet.netconnect.ro/mcp/
+```
+
+Then run `/mcp` → `ssh-fleet` → log in through Keycloak. Keep the trailing slash on the URL.
+
+```text
+/plugin install network-operations@netconnect
+```
+
+Source: [`Netconnect-NCY/ssh-fleet-mcp`](https://github.com/Netconnect-NCY/ssh-fleet-mcp) (the plugin lives under `./claude-plugin/`).
+
 ## Updating
 
 ```text
