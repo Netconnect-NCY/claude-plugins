@@ -43,13 +43,16 @@ Teaches Claude to work as a careful network engineer through the **ssh-fleet MCP
 "X can't reach Y", firewall/ACL, VPN, SIP/SBC, routing, monitoring gaps, or any "push/restart
 this on prod" request. You can also call it explicitly.
 
-**Requires:** the ssh-fleet MCP, connected with your own identity:
+**Requires:** the ssh-fleet MCP. Most engineers already have it: run `/mcp`, and if
+`ssh-fleet` is listed, skip this. Only if it's missing:
 
 ```bash
 claude mcp add --transport http --client-id ssh-fleet-cli -s user ssh-fleet https://mcp.ssh-fleet.netconnect.ro/mcp/
 ```
 
 Then run `/mcp` → `ssh-fleet` → log in through Keycloak. Keep the trailing slash on the URL.
+You don't need to remember this: when ssh-fleet isn't configured, the plugin prints the
+command at session start.
 
 ```text
 /plugin install network-operations@netconnect
