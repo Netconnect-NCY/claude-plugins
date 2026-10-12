@@ -33,13 +33,12 @@
     {
       "name": "ssh-fleet",
       "source": {
-        "source": "git-subdir",
-        "url": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
-        "path": "./claude-plugin"
+        "source": "url",
+        "url": "https://github.com/Netconnect-NCY/ssh-fleet-plugin.git"
       },
       "description": "Everything to work with ssh-fleet from your AI, in one install: the ssh-fleet MCP connection (Keycloak SSO with your NCI account; your rights are your ssh-fleet account's) and the network-operations skill (investigation-first methodology, competing hypotheses, and a change lifecycle that never turns an anomaly into a production change). Works in Claude Code and ChatGPT/Codex.",
-      "homepage": "https://github.com/Netconnect-NCY/ssh-fleet-mcp/tree/main/claude-plugin",
-      "repository": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
+      "homepage": "https://github.com/Netconnect-NCY/ssh-fleet-plugin",
+      "repository": "https://github.com/Netconnect-NCY/ssh-fleet-plugin",
       "category": "operations",
       "tags": [
         "nci",

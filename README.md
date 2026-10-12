@@ -61,7 +61,7 @@ Restart Claude Code, then `/mcp` → `ssh-fleet` → log in in the browser. Chec
 `codex plugin add ssh-fleet@netconnect`. For a whole ChatGPT workspace, an admin publishes
 it to the workspace from ChatGPT's Plugins page.
 
-Source: [`Netconnect-NCY/ssh-fleet-mcp`](https://github.com/Netconnect-NCY/ssh-fleet-mcp) (plugin lives under `./claude-plugin/`).
+Source: [`Netconnect-NCY/ssh-fleet-plugin`](https://github.com/Netconnect-NCY/ssh-fleet-plugin), a read-only mirror of `ssh-fleet-mcp/claude-plugin/` (edit there). For ChatGPT, give the GitHub connection access to `ssh-fleet-plugin` only.
 
 ## Updating
 
