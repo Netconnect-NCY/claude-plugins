@@ -30,6 +30,25 @@ Walks a project through the [NetConnect Golden Path](https://github.com/Netconne
 
 Source: [`Netconnect-NCY/golden-path`](https://github.com/Netconnect-NCY/golden-path) (plugin lives under `./plugin/`).
 
+### `ssh-fleet`
+
+Connects Claude Code to the **ssh-fleet MCP** (`https://mcp.ssh-fleet.netconnect.ro/mcp/`):
+fleet inventory, network devices, BMCs, and the observability and security integrations.
+
+**Sign-in is Keycloak SSO with your own NCI account.** There is no API key to copy. The
+plugin carries the server URL and the OAuth client (`ssh-fleet-cli`, the identity of
+Claude Code itself, not a user). After installing, run `/mcp` → `ssh-fleet` → log in in
+the browser. What you are allowed to do follows your role.
+
+```text
+/plugin install ssh-fleet@netconnect
+```
+
+Already have `ssh-fleet` configured by hand on the same URL? Claude Code keeps your
+manual entry and skips the plugin's, so you get no duplicate tools.
+
+Source: [`plugins/ssh-fleet`](plugins/ssh-fleet) in this repository.
+
 ### `network-operations`
 
 Teaches Claude to work as a careful network engineer through the **ssh-fleet MCP**:
@@ -44,7 +63,8 @@ Teaches Claude to work as a careful network engineer through the **ssh-fleet MCP
 this on prod" request. You can also call it explicitly.
 
 **Requires:** the ssh-fleet MCP. Most engineers already have it: run `/mcp`, and if
-`ssh-fleet` is listed, skip this. Only if it's missing:
+`ssh-fleet` is listed, skip this. Only if it's missing, install the `ssh-fleet` plugin
+above (`/plugin install ssh-fleet@netconnect`), or add it by hand:
 
 ```bash
 claude mcp add --transport http --client-id ssh-fleet-cli -s user ssh-fleet https://mcp.ssh-fleet.netconnect.ro/mcp/

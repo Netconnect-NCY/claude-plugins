@@ -20,7 +20,30 @@
       "homepage": "https://github.com/Netconnect-NCY/golden-path",
       "repository": "https://github.com/Netconnect-NCY/golden-path",
       "category": "bootstrap",
-      "tags": ["nci", "golden-path", "bootstrap", "checkpoints", "bunnyshell", "keycloak", "mcp"]
+      "tags": [
+        "nci",
+        "golden-path",
+        "bootstrap",
+        "checkpoints",
+        "bunnyshell",
+        "keycloak",
+        "mcp"
+      ]
+    },
+    {
+      "name": "ssh-fleet",
+      "source": "./plugins/ssh-fleet",
+      "description": "Connects Claude Code to the ssh-fleet MCP: fleet inventory, network devices, BMCs, observability and security integrations. Sign-in is Keycloak SSO with your NCI account; your rights follow your role.",
+      "homepage": "https://mcp.ssh-fleet.netconnect.ro/",
+      "repository": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
+      "category": "mcp",
+      "tags": [
+        "nci",
+        "mcp",
+        "ssh-fleet",
+        "keycloak",
+        "sso"
+      ]
     },
     {
       "name": "network-operations",
@@ -33,7 +56,14 @@
       "homepage": "https://github.com/Netconnect-NCY/ssh-fleet-mcp/tree/main/claude-plugin",
       "repository": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
       "category": "operations",
-      "tags": ["nci", "network", "ssh-fleet", "incident", "change-management", "telephony"]
+      "tags": [
+        "nci",
+        "network",
+        "ssh-fleet",
+        "incident",
+        "change-management",
+        "telephony"
+      ]
     }
   ]
 }

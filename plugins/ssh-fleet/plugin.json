@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ssh-fleet",
+  "version": "0.1.0",
+  "description": "Connects to the ssh-fleet MCP (fleet inventory, network devices, BMCs, observability and security integrations). Sign-in is Keycloak SSO with your NCI account.",
+  "author": { "name": "Netconnect-NCY", "url": "https://github.com/Netconnect-NCY/ssh-fleet-mcp" },
+  "homepage": "https://mcp.ssh-fleet.netconnect.ro/",
+  "repository": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
+  "keywords": ["nci", "mcp", "ssh-fleet", "keycloak", "sso"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "ssh-fleet",
+        "shortDescription": "Netconnect fleet, network devices and integrations",
+        "developerName": "Netconnect",
+        "category": "Productivity",
+        "websiteURL": "https://mcp.ssh-fleet.netconnect.ro/"
+      }
+    }
+  }
+}
