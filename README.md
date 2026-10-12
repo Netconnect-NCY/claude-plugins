@@ -32,53 +32,36 @@ Source: [`Netconnect-NCY/golden-path`](https://github.com/Netconnect-NCY/golden-
 
 ### `ssh-fleet`
 
-Connects Claude Code to the **ssh-fleet MCP** (`https://mcp.ssh-fleet.netconnect.ro/mcp/`):
-fleet inventory, network devices, BMCs, and the observability and security integrations.
+Everything to work with **ssh-fleet** from your AI, in one install:
+- the **ssh-fleet MCP connection** (`https://mcp.ssh-fleet.netconnect.ro/mcp/`): fleet
+  inventory, network devices, BMCs, observability and security integrations;
+- **sign-in with Keycloak SSO** using your own NCI account. There is no API key to copy, and
+  your rights are your ssh-fleet account's;
+- the **`network-operations` skill**: it investigates before it changes anything, keeps
+  competing hypotheses, and plans every change with blast radius, rollback and approval;
+- its startup check, trace and retrospective hooks.
 
-**Sign-in is Keycloak SSO with your own NCI account.** There is no API key to copy. The
-plugin carries the server URL and the OAuth client (`ssh-fleet-cli`, the identity of
-Claude Code itself, not a user). After installing, run `/mcp` → `ssh-fleet` → log in in
-the browser. What you are allowed to do follows your role.
+**Claude Code** (from a non-project shell, `cd ~ && claude`):
 
 ```text
+/plugin marketplace add Netconnect-NCY/claude-plugins
 /plugin install ssh-fleet@netconnect
 ```
 
-Already have `ssh-fleet` configured by hand on the same URL? Claude Code keeps your
-manual entry and skips the plugin's, so you get no duplicate tools.
+Restart Claude Code, then `/mcp` → `ssh-fleet` → log in in the browser. Check the skill with
+`/ssh-fleet:network-operations`.
 
-Source: [`plugins/ssh-fleet`](plugins/ssh-fleet) in this repository.
+- Already have `ssh-fleet` added by hand on the same URL? Claude Code keeps yours and skips
+  the plugin's, so you get no duplicate tools.
+- Had the old `network-operations` plugin? Remove it first, or the skill loads twice:
+  `/plugin uninstall network-operations@netconnect`.
 
-### `network-operations`
+**ChatGPT / Codex:** OpenAI's plugin system reads this same catalog.
+`codex plugin marketplace add Netconnect-NCY/claude-plugins`, then
+`codex plugin add ssh-fleet@netconnect`. For a whole ChatGPT workspace, an admin publishes
+it to the workspace from ChatGPT's Plugins page.
 
-Teaches Claude to work as a careful network engineer through the **ssh-fleet MCP**:
-- it investigates before it changes anything;
-- it adjusts investigation depth to the problem;
-- it keeps competing hypotheses and resolves contradictions;
-- it plans each change with blast radius, pre-checks, rollback and approval, then
-  verifies the change against the original symptom.
-
-**Provides:** the `network-operations:network-operations` skill. It triggers on
-"X can't reach Y", firewall/ACL, VPN, SIP/SBC, routing, monitoring gaps, or any "push/restart
-this on prod" request. You can also call it explicitly.
-
-**Requires:** the ssh-fleet MCP. Most engineers already have it: run `/mcp`, and if
-`ssh-fleet` is listed, skip this. Only if it's missing, install the `ssh-fleet` plugin
-above (`/plugin install ssh-fleet@netconnect`), or add it by hand:
-
-```bash
-claude mcp add --transport http --client-id ssh-fleet-cli -s user ssh-fleet https://mcp.ssh-fleet.netconnect.ro/mcp/
-```
-
-Then run `/mcp` → `ssh-fleet` → log in through Keycloak. Keep the trailing slash on the URL.
-You don't need to remember this: when ssh-fleet isn't configured, the plugin prints the
-command at session start.
-
-```text
-/plugin install network-operations@netconnect
-```
-
-Source: [`Netconnect-NCY/ssh-fleet-mcp`](https://github.com/Netconnect-NCY/ssh-fleet-mcp) (the plugin lives under `./claude-plugin/`).
+Source: [`Netconnect-NCY/ssh-fleet-mcp`](https://github.com/Netconnect-NCY/ssh-fleet-mcp) (plugin lives under `./claude-plugin/`).
 
 ## Updating
 

@@ -32,34 +32,22 @@
     },
     {
       "name": "ssh-fleet",
-      "source": "./plugins/ssh-fleet",
-      "description": "Connects Claude Code to the ssh-fleet MCP: fleet inventory, network devices, BMCs, observability and security integrations. Sign-in is Keycloak SSO with your NCI account; your rights follow your role.",
-      "homepage": "https://mcp.ssh-fleet.netconnect.ro/",
-      "repository": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
-      "category": "mcp",
-      "tags": [
-        "nci",
-        "mcp",
-        "ssh-fleet",
-        "keycloak",
-        "sso"
-      ]
-    },
-    {
-      "name": "network-operations",
       "source": {
         "source": "git-subdir",
         "url": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
         "path": "./claude-plugin"
       },
-      "description": "Investigation-first network operations through the ssh-fleet MCP. Adaptive depth (L0 lookup to L5 fleet-wide), competing hypotheses, contradiction handling, specialist subagents, and a change lifecycle (plan, approve, verify) that never turns an anomaly into a production change. Triggers on connectivity, routing, firewall/ACL, VPN, SIP/SBC, DNS, monitoring-gap and 'push/restart this' requests.",
+      "description": "Everything to work with ssh-fleet from your AI, in one install: the ssh-fleet MCP connection (Keycloak SSO with your NCI account; your rights are your ssh-fleet account's) and the network-operations skill (investigation-first methodology, competing hypotheses, and a change lifecycle that never turns an anomaly into a production change). Works in Claude Code and ChatGPT/Codex.",
       "homepage": "https://github.com/Netconnect-NCY/ssh-fleet-mcp/tree/main/claude-plugin",
       "repository": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
       "category": "operations",
       "tags": [
         "nci",
-        "network",
+        "mcp",
         "ssh-fleet",
+        "keycloak",
+        "sso",
+        "network",
         "incident",
         "change-management",
         "telephony"
