@@ -1,0 +1,10 @@
+{
+  "name": "ssh-fleet-connect",
+  "description": "Connects Claude to ssh-fleet, NetConnect's network and voice assistant. Sign in with your NetConnect account; you get exactly the rights of your ssh-fleet role (readonly for the routing and commercial team). Nothing else is installed.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Netconnect-NCY",
+    "url": "https://github.com/Netconnect-NCY"
+  },
+  "homepage": "https://ssh-fleet.netconnect.ro/ui/docs/ghid-acces-readonly"
+}

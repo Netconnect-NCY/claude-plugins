@@ -51,6 +51,22 @@
         "change-management",
         "telephony"
       ]
+    },
+    {
+      "name": "ssh-fleet-connect",
+      "source": "./plugins/ssh-fleet-connect",
+      "description": "Just the ssh-fleet connection, for non-engineers: install, click Connect, sign in with your NetConnect account. No GitHub account needed; your rights are your ssh-fleet role's (readonly for the routing and commercial team). Works in Claude Desktop and Claude Code. Engineers who want the Claude Code hooks use the `ssh-fleet` plugin instead.",
+      "homepage": "https://ssh-fleet.netconnect.ro/ui/docs/ghid-acces-readonly",
+      "category": "operations",
+      "tags": [
+        "nci",
+        "mcp",
+        "ssh-fleet",
+        "keycloak",
+        "sso",
+        "readonly",
+        "telephony"
+      ]
     }
   ]
 }
