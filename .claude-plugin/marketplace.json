@@ -67,6 +67,19 @@
         "readonly",
         "telephony"
       ]
+    },
+    {
+      "name": "swarm2",
+      "source": "./plugins/swarm2",
+      "description": "Swarm2 in Claude Code: the Swarm2 MCP connection (NetConnect Keycloak login), the working-with-swarm2 skill and a live control pane (accounts and limits, org pool, your repos and who is working, deploys, capacity and cost). Synced from Netconnect-NCY/swarm2-mcp.",
+      "homepage": "https://swarm2-mcp.netconnect.ro",
+      "category": "development",
+      "tags": [
+        "swarm2",
+        "mcp",
+        "agents",
+        "control-pane"
+      ]
     }
   ]
 }
