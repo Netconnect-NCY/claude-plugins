@@ -1,0 +1,345 @@
+import { expect, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
+import type { On } from 'claude-code'
+
+const PANE = {
+  plugin: 'swarm2',
+  component: 'Pane',
+  requestId: 'swarm2',
+  props: {
+    title: 'Swarm2',
+    isFocused: false,
+    bodyColumns: 60,
+    placement: 'dock',
+    scroll: { offset: 0, bodyRows: 60 },
+    view: {},
+  },
+} as const
+
+const RUN_ID = '12345678-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
+function controlRun(over: Record<string, unknown> = {}) {
+  return {
+    run_id: RUN_ID, repo: 'acme/app', requester: null, mine: true, goal: 'fix login', status: 'running',
+    status_reason: null, provider: 'claude', attempt: 1, phase: 'executing', started_at: null, updated_at: '2026-11-05T00:00:00Z',
+    pr_url: null, merge_status: null, validation_tier: 'affected',
+    workers: [{ id: 'w-01', vendor: 'claude', model: 'claude-opus-5-5', last_action: 'Bash: bun test', since: null }],
+    tokens: null, cost_usd: 1.5, ...over,
+  }
+}
+
+function statusRun(over: Record<string, unknown> = {}) {
+  return {
+    run_id: RUN_ID, repo: 'acme/app', status: 'running', status_reason: null, provider: 'claude', attempt: 1,
+    phase: 'executing', updated_at: '2026-11-05T00:00:00Z', pr_url: null, merge_status: null, merge_reason: null, merge_sha: null,
+    ...over,
+  }
+}
+
+function deployment(over: Record<string, unknown> = {}) {
+  return {
+    deployment_id: 'd0000000-0000-4000-8000-000000000001', repo: 'acme/app', target: 'dev', status: 'deploying',
+    phase: 'deploying', pipeline_url: null, reason: null, updated_at: '2026-11-05T00:00:00Z', ...over,
+  }
+}
+
+function message(id: number, body = `hello ${id}`) {
+  return { id, repo: 'acme/app', from: 'dana@example.com', from_run_id: null, body, created_at: '2026-11-05T10:15:00Z' }
+}
+
+const CONTROL = {
+  accounts: [{
+    id: 'c1', provider: 'anthropic', kind: 'subscription_token', label: 'Claude', owner: 'you', health: 'ok',
+    windows: [{ name: '5h', used_pct: 34, resets_at: null }, { name: '7d', used_pct: 61, resets_at: null }],
+    observed_at: null, in_use: 1, engine_workers: 2, users: [],
+  }],
+  runs: [controlRun()],
+  others: [{ name: 'Dana', active_runs: 2, models: { 'claude-opus-5-5': 2 } }],
+  attention: [{ kind: 'deploy_approval', text: 'acme/app → prod waits for approval', url: null }],
+  deployments: [deployment()],
+  capacity: { org_active: 3, org_limit: 3, queued: 1, pods: 3, today: [{ name: 'you', tokens: 1000, cost_usd: 3.1 }], models: [] },
+}
+
+/** What the fake Swarm2 answers; a test changes it between polls. `control: null` is a server without /me/control. */
+type Server = {
+  control: Record<string, unknown> | null
+  status: Record<string, unknown>
+  /** Every request the pane made, when the test wants them. */
+  calls?: { url: string; authorization: unknown }[]
+}
+
+function json(body: unknown, status = 200) {
+  return { value: { status, ok: status === 200, headers: {}, text: status === 200 ? JSON.stringify(body) : '' } }
+}
+
+function engine(on: On, server: Server, toasts: string[] = [], stored: string | null = 's2s_testtokentesttokentest') {
+  const store = new Map<string, unknown>(stored ? [['statusToken', stored]] : [])
+  on('command.register', () => ({ value: { command: 'x' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('clock.every', () => ({ value: undefined }))
+  on('store.get', (_, e) => ({ value: (store.get(e.key) ?? null) as never }))
+  on('store.set', (_, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('store.delete', (_, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on('http.fetch', (_, e) => {
+    server.calls?.push({ url: e.url, authorization: (e.init?.headers as Record<string, string> | undefined)?.authorization })
+    if (e.url.endsWith('/me/control')) return server.control ? json(server.control) : json(null, 403)
+    if (e.url.endsWith('/me/runs/status')) return json(server.status)
+    return json(null, 404)
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+}
+
+/** Runs a slash command as the person typing it at the prompt does. */
+const command = ($: Engine, name: string, args = '') =>
+  $.command.run({ command: name, args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+
+const has = async (ui: { find: (q: { type: string; text: RegExp }) => Promise<unknown> }, text: RegExp) =>
+  expect((await ui.find({ type: 'Text', text })) ? 'found' : `missing ${text}`).toBe('found')
+
+test('the control feed fills every section, messages from the status feed', async ($, on) => {
+  engine(on, { control: CONTROL, status: { runs: [statusRun()], deployments: [deployment()], messages: [message(1, 'ship it')] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    for (const text of [/ACCOUNTS/, /34%/, /⚙×2/, /NEEDS YOU/, /waits for approval/, /MY REPOS/, /claude-opus-5-5 ▸ Bash: bun test/,
+      /OTHERS/, /Dana/, /DELIVERY/, /MESSAGES/, /ship it/, /dana@example\.com/, /CAPACITY/, /org 3\/3 running/]) {
+      await has(ui, text)
+    }
+    expect(await ui.find({ type: 'Text', text: /basic feed/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+const POOL_ACCOUNT = {
+  id: 'p1', provider: 'openai', kind: 'api_key', label: 'Codex team key', owner: 'pool · Edi', health: 'ok',
+  windows: [], observed_at: null, in_use: 0, engine_workers: 0, users: [],
+}
+
+const PROJECTS = [
+  { repo: 'acme/app', role: 'owner', active_runs: 1, more_members: 3, members: [
+    { name: 'Alex', role: 'owner', you: true, active_runs: 1 }, { name: 'Edi', role: 'maintainer', you: false, active_runs: 2 }] },
+  { repo: 'acme/idle-repo', role: 'maintainer', active_runs: 0, more_members: 0, members: [
+    { name: 'Alex', role: 'maintainer', you: true, active_runs: 0 }, { name: 'Ion', role: 'viewer', you: false, active_runs: 0 }] },
+]
+
+test('pool and projects: MY ACCOUNTS, ORG POOL on, every member repo with its members and runs', async ($, on) => {
+  const UNLISTED = '99990000-eeee-4eee-8eee-eeeeeeeeeeee'
+  const control = {
+    ...CONTROL, accounts: [...CONTROL.accounts, POOL_ACCOUNT], pool: { enabled: true }, projects: PROJECTS,
+    runs: [controlRun(), controlRun({ run_id: UNLISTED, repo: 'acme/other', mine: false, requester: 'Edi', workers: [] })],
+  }
+  engine(on, { control, status: { runs: [], deployments: [], messages: [] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    for (const text of [/MY ACCOUNTS/, /ORG POOL/, /— ON/, /1 account$/, /Codex team key/, /\(Edi\)/, /MY REPOS/, /2 repos · 2 running/,
+      /owner · 1 running/, /idle-repo/, /maintainer · idle/, /\(you\)/, /Ion/, /viewer/, /×2/, /\+3 more/,
+      /you · \[#+-*\] executing/, /claude-opus-5-5 ▸ Bash: bun test/, /acme\/other/, /Edi · \[#+-*\] executing/]) {
+      await has(ui, text)
+    }
+    expect(await ui.find({ type: 'Text', text: /— OFF/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /Nothing on your repos/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('pool off with no pool accounts, and an empty project list', async ($, on) => {
+  engine(on, { control: { ...CONTROL, runs: [], pool: { enabled: false }, projects: [] }, status: { runs: [], deployments: [], messages: [] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await has(ui, /— OFF/)
+    await has(ui, /No accounts in the pool yet\./)
+    await has(ui, /You are not a member of any project yet\./)
+    await ui.unmount()
+  }
+})
+
+test('a control feed without pool or projects keeps the run-based layout', async ($, on) => {
+  engine(on, { control: CONTROL, status: { runs: [], deployments: [], messages: [] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await has(ui, /ORG POOL/)
+    await has(ui, /the organisation pool is off or empty/)
+    await has(ui, /MY REPOS 1 running/)
+    await has(ui, /acme\/app/)
+    await has(ui, /claude-opus-5-5 ▸ Bash: bun test/)
+    expect(await ui.find({ type: 'Text', text: /— ON|— OFF/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /\(you\)/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('an older server falls back to the status feed, messages included', async ($, on) => {
+  const status = { runs: [statusRun({ status: 'blocked', status_reason: 'no Claude account', phase: 'queued' })], deployments: [],
+    messages: [message(2, 'please review')] }
+  engine(on, { control: null, status })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await has(ui, /no Claude account/)
+    await has(ui, /basic feed/)
+    await has(ui, /MESSAGES/)
+    await has(ui, /please review/)
+    await has(ui, /MY ACCOUNTS/)
+    await has(ui, /Usage data needs a Swarm2 server with the control feed/)
+    expect(await ui.find({ type: 'Text', text: /ORG POOL/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('no token asks for /swarm2-token, and /swarm2-token saves one', async ($, on) => {
+  const toasts: string[] = []
+  engine(on, { control: CONTROL, status: { runs: [], deployments: [], messages: [] } }, toasts, null)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  let ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /No status token: run \/swarm2-token/)
+  await ui.unmount()
+  expect((await command($, 'swarm2-token', 'nope')).text).toContain('Usage: /swarm2-token')
+  expect((await command($, 'swarm2-token', 's2s_abcdefghijklmnopqrst')).text).toContain('token saved')
+  ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /ACCOUNTS/)
+  expect(await ui.find({ type: 'Text', text: /No status token/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('run toasts: no replay on the first poll; PR, merge with SHA from the status feed, merge outcome, terminal status', async ($, on) => {
+  const toasts: string[] = []
+  const server: Server = {
+    control: { ...CONTROL, attention: [], deployments: [], runs: [controlRun({ status: 'succeeded', phase: 'done', merge_status: 'merged' })] },
+    status: { runs: [statusRun({ status: 'succeeded', phase: 'done', merge_status: 'merged', merge_sha: 'f'.repeat(40) })], deployments: [], messages: [] },
+  }
+  engine(on, server, toasts)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  expect(toasts).toEqual([])
+
+  const poll = async (control: Record<string, unknown>, status: Record<string, unknown>) => {
+    server.control = { ...CONTROL, attention: [], deployments: [], runs: [controlRun(control)] }
+    server.status = { runs: [statusRun(status)], deployments: [], messages: [] }
+    await command($, 'swarm2')
+  }
+  const OTHER = '87654321-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+  // a second run, first seen now: it only records
+  await poll({ run_id: OTHER, phase: 'executing' }, { run_id: OTHER })
+  await poll({ run_id: OTHER, phase: 'publishing', pr_url: 'https://github.com/x/y/pull/7' },
+    { run_id: OTHER, pr_url: 'https://github.com/x/y/pull/7' })
+  // entering the merging phase announces nothing
+  await poll({ run_id: OTHER, phase: 'merging', pr_url: 'https://github.com/x/y/pull/7', merge_status: 'pending' },
+    { run_id: OTHER, pr_url: 'https://github.com/x/y/pull/7', merge_status: 'pending' })
+  await poll({ run_id: OTHER, status: 'succeeded', phase: 'done', pr_url: 'https://github.com/x/y/pull/7', merge_status: 'merged' },
+    { run_id: OTHER, status: 'succeeded', pr_url: 'https://github.com/x/y/pull/7', merge_status: 'merged', merge_sha: 'abcdef0123456789' })
+  // merged again on the next poll: no second toast
+  await poll({ run_id: OTHER, status: 'succeeded', phase: 'done', pr_url: 'https://github.com/x/y/pull/7', merge_status: 'merged' },
+    { run_id: OTHER, status: 'succeeded', pr_url: 'https://github.com/x/y/pull/7', merge_status: 'merged', merge_sha: 'abcdef0123456789' })
+  expect(toasts).toEqual([
+    'Swarm2 87654321 opened a PR: https://github.com/x/y/pull/7',
+    'Swarm2 87654321 merged (acme/app) · abcdef01',
+  ])
+
+  toasts.length = 0
+  const THIRD = '11112222-cccc-4ccc-8ccc-cccccccccccc'
+  await poll({ run_id: THIRD, phase: 'merging', merge_status: 'pending' }, { run_id: THIRD, merge_status: 'pending' })
+  await poll({ run_id: THIRD, status: 'succeeded', phase: 'done', merge_status: 'merge_blocked' },
+    { run_id: THIRD, status: 'succeeded', merge_status: 'merge_blocked', merge_reason: 'checks require attention' })
+  expect(toasts).toEqual(['Swarm2 11112222 merge merge_blocked: checks require attention'])
+
+  toasts.length = 0
+  const FOURTH = '33334444-dddd-4ddd-8ddd-dddddddddddd'
+  await poll({ run_id: FOURTH }, { run_id: FOURTH })
+  await poll({ run_id: FOURTH, status: 'failed', status_reason: 'tests failed' }, { run_id: FOURTH, status: 'failed', status_reason: 'tests failed' })
+  expect(toasts).toEqual(['Swarm2 33334444 failed: tests failed'])
+})
+
+test('deployment toasts: done, failed and a new prod request awaiting approval, never on the first poll', async ($, on) => {
+  const toasts: string[] = []
+  const server: Server = {
+    control: { ...CONTROL, runs: [], attention: [], deployments: [deployment({ status: 'succeeded', phase: 'done' })] },
+    status: { runs: [], deployments: [], messages: [] },
+  }
+  engine(on, server, toasts)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  expect(toasts).toEqual([])
+
+  const set = (deployments: Record<string, unknown>[]) => {
+    server.control = { ...CONTROL, runs: [], attention: [], deployments: deployments.map(deployment) }
+  }
+  const D2 = 'd0000000-0000-4000-8000-000000000002'
+  const D3 = 'd0000000-0000-4000-8000-000000000003'
+  const D4 = 'd0000000-0000-4000-8000-000000000004'
+  set([{ deployment_id: D2 }])
+  await command($, 'swarm2')
+  set([{ deployment_id: D2, status: 'verifying', phase: 'verifying' }])
+  await command($, 'swarm2')
+  set([{ deployment_id: D2, status: 'succeeded', phase: 'done' }])
+  await command($, 'swarm2')
+  await command($, 'swarm2')
+  set([{ deployment_id: D3, status: 'failed', phase: 'failed', reason: 'health check\nfailed' }])
+  await command($, 'swarm2')
+  set([{ deployment_id: D4, target: 'prod', status: 'awaiting_approval', phase: 'awaiting_approval' }])
+  await command($, 'swarm2')
+  expect(toasts).toEqual([
+    'Swarm2 deploy acme/app → dev deployed',
+    'Swarm2 deploy acme/app → dev failed (failed): health check failed',
+    'Swarm2 deploy acme/app → prod awaiting approval',
+  ])
+})
+
+test('message toasts: each new message once, more than three collapse, none on the first poll', async ($, on) => {
+  const toasts: string[] = []
+  const server: Server = { control: { ...CONTROL, runs: [], attention: [], deployments: [] }, status: { runs: [], deployments: [], messages: [message(1)] } }
+  engine(on, server, toasts)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  expect(toasts).toEqual([])
+
+  server.status = { runs: [], deployments: [], messages: [message(3), message(2), message(1)] }
+  await command($, 'swarm2')
+  await command($, 'swarm2')
+  expect(toasts).toEqual([
+    'Swarm2 message acme/app · dana@example.com: hello 2',
+    'Swarm2 message acme/app · dana@example.com: hello 3',
+  ])
+
+  toasts.length = 0
+  server.status = { runs: [], deployments: [], messages: [4, 5, 6, 7, 8].map(id => message(id)).concat([message(3)]) }
+  await command($, 'swarm2')
+  expect(toasts).toEqual(['Swarm2: 5 new project messages (acme/app)'])
+})
+
+test('a feed an earlier version stored is read as empty', async ($, on) => {
+  on('state.get', () => ({ value: { value: { runs: [], error: null, checkedAt: null }, version: 1 } }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await has(ui, /connecting…/)
+  await ui.unmount()
+})
+
+test('the userConfig status token is used against the prod URL by default', { options: { statusToken: 's2s_configuredconfiguredtoken' } }, async ($, on) => {
+  const server: Server = { control: null, status: { runs: [], deployments: [], messages: [] }, calls: [] }
+  engine(on, server, [], null)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const urls = server.calls!.map(c => c.url)
+  expect(urls).toContain('https://swarm2-mcp.netconnect.ro/me/control')
+  expect(urls).toContain('https://swarm2-mcp.netconnect.ro/me/runs/status')
+  for (const c of server.calls!) expect(c.authorization).toBe('Bearer s2s_configuredconfiguredtoken')
+})

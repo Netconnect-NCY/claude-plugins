@@ -1,0 +1,24 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "swarm2",
+  "version": "0.1.0",
+  "description": "Swarm2 MCP with Keycloak OAuth and the working-with-swarm2 skill for planning, delegating and following remote coding work.",
+  "author": {
+    "name": "Netconnect-NCY",
+    "url": "https://swarm2-mcp.netconnect.ro/"
+  },
+  "homepage": "https://swarm2-mcp.netconnect.ro/",
+  "repository": "https://github.com/Netconnect-NCY/claude-plugins",
+  "keywords": ["swarm2", "mcp", "keycloak", "coding", "agents", "delegation"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Swarm2",
+        "shortDescription": "Plan, delegate and follow remote coding work with Keycloak SSO",
+        "developerName": "Netconnect",
+        "category": "Productivity",
+        "websiteURL": "https://swarm2-mcp.netconnect.ro/"
+      }
+    }
+  }
+}

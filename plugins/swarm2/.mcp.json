@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "swarm2": {
+      "type": "http",
+      "url": "${user_config.baseUrl}/mcp",
+      "oauth": { "clientId": "swarm2-mcp", "callbackPort": 33418 }
+    }
+  }
+}
