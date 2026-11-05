@@ -1,8 +1,10 @@
 {
   "name": "swarm2",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Swarm2 in Claude Code: the MCP connection (Keycloak OAuth), the working-with-swarm2 skill, and a live run pane with status line and toasts",
-  "author": { "name": "NetConnect" },
+  "author": {
+    "name": "NetConnect"
+  },
   "license": "UNLICENSED",
   "types": "./types/index.d.ts",
   "userConfig": {

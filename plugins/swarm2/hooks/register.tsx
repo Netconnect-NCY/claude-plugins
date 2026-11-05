@@ -7,6 +7,17 @@ import {
   TERMINAL, toastFor,
 } from './toasts'
 
+/** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
+export const PLUGIN_VERSION = '0.2.0'
+
+/** PROD for the production host, DEV for the known dev host, otherwise the host itself (a custom server). */
+export function environmentLabel(base: string): { name: string; host: string } {
+  let host = base
+  try { host = new URL(base).host } catch { /* shown as configured */ }
+  if (host === 'swarm2-mcp.netconnect.ro') return { name: 'PROD', host }
+  if (host === 'swarm2-mcp-5ssd2i.netcompile.ro') return { name: 'DEV', host }
+  return { name: host, host }
+}
 const PANE = 'swarm2'
 const TITLE = 'Swarm2'
 const DEFAULT_BASE = 'https://swarm2-mcp.netconnect.ro'
@@ -182,7 +193,7 @@ function toastChanges($: EngineInterface, f: Feed, messagesKnown: boolean): void
   loaded = true
 }
 
-function statusLine(f: Feed): string | undefined {
+function statusLine(f: Feed, env = ''): string | undefined {
   const active = f.runs.filter(isActive).length + f.others.reduce((n, o) => n + o.active_runs, 0)
   const deploying = f.deployments.filter(d => !DEPLOY_DONE.has(d.status) && deploymentPhase(d) !== 'awaiting_approval').length
   const tight = f.accounts
@@ -194,7 +205,7 @@ function statusLine(f: Feed): string | undefined {
   if (deploying) parts.push(`${deploying} deploying`)
   if (f.attention.length) parts.push(`${f.attention.length} need you`)
   if (tight && active) parts.push(`${tight.a.provider} ${windowLabel(tight.w)} ${Math.round(tight.w.used_pct ?? 0)}%`)
-  return parts.length ? `swarm2 · ${parts.join(' · ')}` : undefined
+  return parts.length ? `swarm2${env ? ` ${env}` : ''} · ${parts.join(' · ')}` : undefined
 }
 
 function anyActive(f: Feed): boolean {
@@ -256,7 +267,7 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
   lastMessages = next.messages
   toastChanges($, next, statusBody !== null)
   await update($, feed, () => next)
-  $.ui.status(statusLine(next))
+  $.ui.status(statusLine(next, environmentLabel(base).name))
   setSpinner($, anyActive(next))
 }
 
@@ -412,8 +423,13 @@ export const register: Register = (on, options) => {
       ? `${projects.length} repo${projects.length === 1 ? '' : 's'}${mine.length ? ` · ${mine.length} running` : ''}`
       : (mine.length ? `${mine.length} running` : 'idle')
 
+    const env = environmentLabel(base)
     return (
       <Box flexDirection="column" width={cols}>
+        <Text wrap="truncate-end">
+          <Text weight="bold" color={env.name === 'PROD' ? 'red' : env.name === 'DEV' ? 'green' : 'yellow'}>● {env.name}</Text>
+          <Text dimColor> {env.host} · plugin v{PLUGIN_VERSION}</Text>
+        </Text>
         {f.error && <Text color="yellow" wrap="wrap">{f.error}</Text>}
 
         {heading('MY ACCOUNTS')}
@@ -521,6 +537,7 @@ export const register: Register = (on, options) => {
         <Text dimColor color={stale ? 'yellow' : undefined}>
           {f.checkedAt ? `${stale ? 'stale · ' : ''}updated ${clock(f.checkedAt)}` : 'connecting…'}
           {f.source === 'status' ? ' · basic feed' : ''}
+          {` · plugin v${PLUGIN_VERSION}`}
         </Text>
       </Box>
     )
