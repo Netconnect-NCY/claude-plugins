@@ -14,7 +14,7 @@ All argument names below are the server's input schemas. `repo` is always `owner
 Use it when the project is registered in Swarm2 (check with `swarm_projects`) and you need durable context, a delegated coding run with verified evidence, or a handoff another chat or agent can pick up.
 
 Do not use it:
-- for the forbidden repositories `Netconnect-NCY/swarm2-mcp` and `Netconnect-NCY/swarm`: the server refuses them (`forbidden_repo`) for register, submit and resume;
+- for a repository on the server's denylist (a server may configure one; none is forbidden by default): the server refuses it (`forbidden_repo`) for register, submit and resume. Members may work on Swarm2's own repositories through Swarm2 under their normal project roles;
 - for a small edit you can make and verify yourself in your own checkout: a remote run costs a worker, a verifier and the owner's provider quota;
 - for anything not covered by the authorization the user or plan gives you.
 
