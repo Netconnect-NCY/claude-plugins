@@ -45,6 +45,9 @@ export function toastFor(prevKey: string | undefined, run: Run): string | null {
     return `${prefix} merge ${run.merge_status}${run.merge_reason ? `: ${run.merge_reason}` : ''}`
   }
   if (run.pr_url && prev.pr_url !== run.pr_url) return `${prefix} opened a PR: ${run.pr_url}`
+  if (prev.status === 'waiting_quota' && (run.status === 'queued' || run.status === 'running')) {
+    return `${prefix} quota wait ended; resuming (${run.repo})`
+  }
   if (TERMINAL.has(run.status) && prev.status !== run.status) {
     return `${prefix} ${run.status}${run.status_reason ? `: ${run.status_reason}` : ''}`
   }

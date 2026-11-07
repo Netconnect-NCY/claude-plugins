@@ -2,6 +2,7 @@
 // this shape; `/me/runs/status` adds the project messages and each run's merge reason and SHA, and on an older server without
 // `/me/control` it is mapped onto the same shape (accounts, others, capacity, pool and projects then stay empty).
 
+/** `_quota` is one persistent account cooldown: null percentage, scheduling retry in resets_at. */
 export type UsageWindow = { name: string; used_pct: number | null; resets_at: string | null }
 
 export type Account = {
@@ -33,6 +34,8 @@ export type Run = {
   provider: string | null
   attempt: number | null
   phase: string
+  /** Earliest quota retry, null when unknown/hidden or not waiting; absent on older servers. */
+  quota_resume_at?: string | null
   started_at: string | null
   updated_at: string
   pr_url: string | null

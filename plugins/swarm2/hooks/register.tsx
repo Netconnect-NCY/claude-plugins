@@ -58,6 +58,7 @@ function short(id: string): string {
 
 function phaseBar(phase: string, failed: boolean): string {
   if (failed) return '[ failed ]'
+  if (phase === 'waiting_quota') return '[ paused ]'
   const i = Math.max(0, PHASES.indexOf(phase))
   const done = Math.round(((i + 1) / PHASES.length) * 8)
   return '[' + '#'.repeat(done) + '-'.repeat(8 - done) + ']'
@@ -100,6 +101,7 @@ function tokens(n: number): string {
 }
 
 function windowLabel(w: UsageWindow): string {
+  if (w.name === '_quota') return 'quota cooldown'
   return w.name.replace(/^five_hour$|^5h$/, '5h').replace(/^seven_day$|^7d$/, '7d')
 }
 
@@ -124,7 +126,7 @@ function outcome(r: Run): string {
 type StatusRun = {
   run_id: string; repo: string; status: string; status_reason: string | null; provider: string | null; attempt: number | null
   phase: string; updated_at: string; pr_url: string | null; merge_status?: string | null; merge_reason?: string | null
-  merge_sha?: string | null; validation_tier?: string | null
+  merge_sha?: string | null; validation_tier?: string | null; quota_resume_at?: string | null
 }
 type StatusBody = { runs?: StatusRun[]; deployments?: Deployment[]; messages?: Message[] }
 
@@ -135,10 +137,12 @@ function fromStatus(body: StatusBody): Pick<Feed, 'runs' | 'deployments' | 'atte
     run_id: r.run_id, repo: r.repo, requester: null, mine: true, goal: null, status: r.status, status_reason: r.status_reason,
     provider: r.provider, attempt: r.attempt, phase: r.phase, started_at: null, updated_at: r.updated_at, pr_url: r.pr_url,
     merge_status: r.merge_status ?? null, merge_reason: r.merge_reason ?? null, merge_sha: r.merge_sha ?? null,
-    validation_tier: r.validation_tier ?? null, workers: [], tokens: null, cost_usd: null,
+    quota_resume_at: r.quota_resume_at ?? null, validation_tier: r.validation_tier ?? null, workers: [], tokens: null, cost_usd: null,
   }))
   const deployments = Array.isArray(body.deployments) ? body.deployments : []
   const attention: Attention[] = [
+    ...runs.filter(r => r.status === 'waiting_quota')
+      .map(r => ({ kind: 'run_quota', text: `${r.repo} ${short(r.run_id)}: waiting for quota; ${r.quota_resume_at ? `earliest retry ${r.quota_resume_at}` : 'automatic retry pending'}`, url: null })),
     ...runs.filter(r => r.status === 'blocked')
       .map(r => ({ kind: 'run_blocked', text: `${r.repo} ${short(r.run_id)}: ${r.status_reason ?? 'blocked'}`, url: null })),
   ]
@@ -193,7 +197,8 @@ function toastChanges($: EngineInterface, f: Feed, messagesKnown: boolean): void
 }
 
 function statusLine(f: Feed, env = ''): string | undefined {
-  const active = f.runs.filter(isActive).length + f.others.reduce((n, o) => n + o.active_runs, 0)
+  const waiting = f.runs.filter(r => r.status === 'waiting_quota').length
+  const active = f.runs.filter(r => isActive(r) && r.status !== 'waiting_quota').length + f.others.reduce((n, o) => n + o.active_runs, 0)
   const deploying = f.deployments.filter(d => !DEPLOY_DONE.has(d.status) && deploymentPhase(d) !== 'awaiting_approval').length
   const tight = f.accounts
     .flatMap(a => a.windows.map(w => ({ a, w })))
@@ -201,6 +206,7 @@ function statusLine(f: Feed, env = ''): string | undefined {
     .sort((x, y) => (y.w.used_pct ?? 0) - (x.w.used_pct ?? 0))[0]
   const parts: string[] = []
   if (active) parts.push(`${active} running`)
+  if (waiting) parts.push(`${waiting} waiting for quota`)
   if (deploying) parts.push(`${deploying} deploying`)
   if (f.attention.length) parts.push(`${f.attention.length} need you`)
   if (tight && active) parts.push(`${tight.a.provider} ${windowLabel(tight.w)} ${Math.round(tight.w.used_pct ?? 0)}%`)
@@ -208,7 +214,7 @@ function statusLine(f: Feed, env = ''): string | undefined {
 }
 
 function anyActive(f: Feed): boolean {
-  return f.runs.some(isActive) || f.others.some(o => o.active_runs > 0) || f.accounts.some(a => a.in_use > 0)
+  return f.runs.some(r => isActive(r) && r.status !== 'waiting_quota') || f.others.some(o => o.active_runs > 0) || f.accounts.some(a => a.in_use > 0)
     || f.deployments.some(d => !DEPLOY_DONE.has(d.status) && deploymentPhase(d) !== 'awaiting_approval')
 }
 
@@ -344,8 +350,8 @@ export const register: Register = (on, options) => {
           {a.windows.length === 0 && <Text dimColor>no usage figure yet</Text>}
           {a.windows.map(w => (
             <Text color={(w.used_pct ?? 0) >= 90 ? 'red' : (w.used_pct ?? 0) >= 80 ? 'yellow' : undefined}>
-              {windowLabel(w)} {w.used_pct === null ? '?' : `${pctBar(w.used_pct)} ${Math.round(w.used_pct)}%`}
-              {w.resets_at ? ` ↻${clock(w.resets_at)}` : ''}{'  '}
+              {windowLabel(w)} {w.name === '_quota' ? '' : w.used_pct === null ? '?' : `${pctBar(w.used_pct)} ${Math.round(w.used_pct)}%`}
+              {w.resets_at ? (w.name === '_quota' ? `until ${w.resets_at}` : ` ↻${clock(w.resets_at)}`) : ''}{'  '}
             </Text>
           ))}
           {a.health !== 'ok' && a.health !== 'unknown' && <Text color="red">{a.health} </Text>}
@@ -361,7 +367,7 @@ export const register: Register = (on, options) => {
     const runDetail = (r: Run, indent: string) => (
       <Box flexDirection="column">
         <Text wrap="truncate-end">
-          {indent}<Text color="magenta">{spin}</Text> {r.mine ? 'you' : (r.requester ?? 'someone')} · {phaseBar(r.phase, false)} {r.phase}
+          {indent}<Text color="magenta">{r.status === 'waiting_quota' ? '⏸' : spin}</Text> {r.mine ? 'you' : (r.requester ?? 'someone')} · {phaseBar(r.phase, false)} {r.phase === 'waiting_quota' ? 'waiting for quota' : r.phase}
           <Text dimColor>
             {' '}{short(r.run_id)}
             {r.started_at ? ` · ${ago(r.started_at)}` : ''}
@@ -371,6 +377,7 @@ export const register: Register = (on, options) => {
             {r.cost_usd !== null ? ` · ${money(r.cost_usd)}` : ''}
           </Text>
         </Text>
+        {r.status === 'waiting_quota' && <Text color="yellow" wrap="truncate-end">{indent}  {r.quota_resume_at ? `Earliest automatic retry ${r.quota_resume_at}` : 'Automatic retry pending'}</Text>}
         {r.goal && <Text dimColor wrap="truncate-end">{indent}  “{r.goal}”</Text>}
         {r.workers.map(w => (
           <Text dimColor wrap="truncate-end">
@@ -419,9 +426,12 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    const waitingCount = mine.filter(r => r.status === 'waiting_quota').length
+    const executingCount = mine.length - waitingCount
+    const runCounts = [executingCount ? `${executingCount} running` : '', waitingCount ? `${waitingCount} waiting for quota` : ''].filter(Boolean).join(' · ')
     const reposExtra = projects
-      ? `${projects.length} repo${projects.length === 1 ? '' : 's'}${mine.length ? ` · ${mine.length} running` : ''}`
-      : (mine.length ? `${mine.length} running` : 'idle')
+      ? `${projects.length} repo${projects.length === 1 ? '' : 's'}${runCounts ? ` · ${runCounts}` : ''}`
+      : (runCounts || 'idle')
 
     const env = environmentLabel(base)
     return (

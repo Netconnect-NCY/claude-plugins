@@ -73,3 +73,5 @@ OAuth uses the provided public client `swarm2-mcp`, authorization code + PKCE, a
 ## Publishing
 
 This plugin is published to the public catalog [Netconnect-NCY/claude-plugins](https://github.com/Netconnect-NCY/claude-plugins) at `plugins/swarm2`. It is maintained in the Swarm2 source repository and copied into the catalog automatically whenever it changes there; changes made directly in the catalog copy are overwritten.
+
+Quota waits appear under NEEDS YOU and as a paused “waiting for quota” run, with the earliest automatic retry when known. An account's “quota cooldown” window shows when it becomes eligible again, without inventing a remaining balance. The scheduler resumes eligible work automatically; updating the credentials owner's account can permit an earlier retry. Explicit providers stay pinned and the organisation pool is used only when already enabled and authorized. The default maximum wait is 24 hours (`SWARM2_QUOTA_MAX_WAIT_SECONDS`); expiry fails with `quota_exhausted`. See `docs/QUOTA_FAILOVER.md` in the source repository for continuation and visibility rules.

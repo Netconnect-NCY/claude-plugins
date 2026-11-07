@@ -357,3 +357,26 @@ test('a dev base URL is labelled DEV in the pane', { options: { statusToken: 's2
   expect((await ui.find({ type: 'Text', text: /● DEV/ })) ? 'found' : 'missing ● DEV').toBe('found')
   await ui.unmount()
 })
+
+test('quota waits show NEEDS YOU, paused phase and retry time on control feed', async ($, on) => {
+  const retry = '2026-11-07T12:00:00Z'
+  const waiting = { status: 'waiting_quota', phase: 'waiting_quota', quota_resume_at: retry, workers: [] }
+  engine(on, { control: { ...CONTROL, runs: [controlRun(waiting)],
+    accounts: [{ ...CONTROL.accounts[0]!, health: 'cooling', windows: [{ name: '_quota', used_pct: null, resets_at: retry }] }],
+    attention: [{ kind: 'run_quota', text: `Waiting for quota; earliest retry ${retry}`, url: null }] },
+    status: { runs: [statusRun(waiting)] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  for (const text of [/NEEDS YOU/, /\[ paused \]/, /waiting for quota/, /Earliest automatic retry 2026-11-07T12:00:00Z/, /quota cooldown/, /until 2026-11-07T12:00:00Z/]) await has(ui, text)
+  await ui.unmount()
+})
+
+test('status fallback synthesizes quota attention with unknown retry time', async ($, on) => {
+  engine(on, { control: null, status: { runs: [statusRun({ status: 'waiting_quota', phase: 'waiting_quota' })] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  for (const text of [/NEEDS YOU/, /waiting for quota/, /Automatic retry pending/]) await has(ui, text)
+  await ui.unmount()
+})
