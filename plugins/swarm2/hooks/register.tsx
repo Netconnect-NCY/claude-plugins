@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Account, Attention, Deployment, Feed, Message, ProjectRow, Run, UsageWindow } from '../types'
 import {
-  accountKey, accountToastFor, attentionToasts, deploymentKey, deploymentPhase, deploymentToastFor, messageToasts, oneLine, runKey,
+  accountKey, accountToastFor, attentionToasts, visibleAttention, deploymentKey, deploymentPhase, deploymentToastFor, messageToasts, oneLine, runKey,
   TERMINAL, toastFor,
 } from './toasts'
 
@@ -128,7 +128,8 @@ type StatusRun = {
 }
 type StatusBody = { runs?: StatusRun[]; deployments?: Deployment[]; messages?: Message[] }
 
-/** The basic feed mapped onto the pane's shape, for a server without /me/control. */
+/** The basic feed mapped onto the pane's shape, for a server without /me/control. It carries no capabilities, so it raises no
+ * approval items: a deployment awaiting approval is listed under DELIVERY only. */
 function fromStatus(body: StatusBody): Pick<Feed, 'runs' | 'deployments' | 'attention'> {
   const runs: Run[] = (body.runs ?? []).map(r => ({
     run_id: r.run_id, repo: r.repo, requester: null, mine: true, goal: null, status: r.status, status_reason: r.status_reason,
@@ -140,8 +141,6 @@ function fromStatus(body: StatusBody): Pick<Feed, 'runs' | 'deployments' | 'atte
   const attention: Attention[] = [
     ...runs.filter(r => r.status === 'blocked')
       .map(r => ({ kind: 'run_blocked', text: `${r.repo} ${short(r.run_id)}: ${r.status_reason ?? 'blocked'}`, url: null })),
-    ...deployments.filter(d => deploymentPhase(d) === 'awaiting_approval')
-      .map(d => ({ kind: 'deploy_approval', text: `${d.repo} → ${d.target} waits for approval`, url: null })),
   ]
   return { runs, deployments, attention }
 }
@@ -249,6 +248,7 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
     const body = control.body as Partial<Feed>
     next = {
       ...EMPTY, ...body, source: 'control', runs: withMergeDetail(body.runs ?? [], statusBody),
+      attention: visibleAttention(body.attention ?? [], body.projects),
       messages: statusBody ? (Array.isArray(statusBody.messages) ? statusBody.messages : []) : lastMessages,
       error: null, checkedAt,
     }

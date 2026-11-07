@@ -1,8 +1,27 @@
-import type { Account, Attention, Deployment, Message, Run } from '../types'
+import type { Account, Attention, Deployment, Message, ProjectRow, Run } from '../types'
 
 // The toast rules of the README, as pure functions over what the module remembers between polls.
 
 export const TERMINAL = new Set(['succeeded', 'failed', 'cancelled', 'interrupted', 'blocked'])
+
+/** The capability an approval item asks of the viewer; the server already filters on it, the pane re-checks. */
+export const ATTENTION_CAPABILITY: Readonly<Record<string, string>> = {
+  run_approval: 'run.approve_scope', deploy_approval: 'deploy.prod.approve',
+}
+
+/**
+ * Approval items ("waiting for your approval") only where the viewer's project row grants the matching capability. Items
+ * name their repo first (`acme/app: …`); a row without capabilities (a server before roles) or no matching row keeps the
+ * server's decision.
+ */
+export function visibleAttention(attention: Attention[], projects: ProjectRow[] | null | undefined): Attention[] {
+  return attention.filter(a => {
+    const needed = ATTENTION_CAPABILITY[a.kind]
+    if (!needed) return true
+    const project = projects?.find(p => a.text.startsWith(`${p.repo}:`))
+    return project?.capabilities ? project.capabilities.includes(needed) : true
+  })
+}
 
 type Snapshot = Pick<Run, 'status' | 'pr_url' | 'merge_status'>
 

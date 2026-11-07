@@ -41,7 +41,9 @@ The MCP server sends initialize `instructions` directing clients through `swarm_
 The pane polls `GET <baseUrl>/me/control` with `Authorization: Bearer <statusToken>`, falling back to `GET <baseUrl>/me/runs/status` for older servers. It shows a spinner during active work and keeps the status line. The control sections are:
 
 - **ACCOUNTS:** provider accounts and their reported health/usage.
-- **NEEDS YOU:** items requiring your attention.
+- **NEEDS YOU:** items requiring your attention. Scope and production deploy approvals appear only where your rights in that
+  project include `run.approve_scope` / `deploy.prod.approve` (the project row's `capabilities`); the basic status feed carries
+  no rights, so on it a deployment awaiting approval is listed under DELIVERY only.
 - **MY REPOS:** your repository runs and progress.
 - **OTHERS:** other visible activity.
 - **DELIVERY:** active and recent deployments (repo, target, phase/status, pipeline link, reason).

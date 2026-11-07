@@ -49,8 +49,11 @@ export type Run = {
 }
 
 export type ProjectMember = { name: string; role: string; you: boolean; active_runs: number }
-/** members is capped (the viewer, active members and owners first); more_members counts the rest */
-export type ProjectRow = { repo: string; role: string; active_runs: number; members: ProjectMember[]; more_members: number }
+/** members is capped (the viewer, active members and owners first); more_members counts the rest. role is the viewer's
+ * (viewer | developer | maintainer | owner); capabilities their effective rights there, absent from servers before roles. */
+export type ProjectRow = {
+  repo: string; role: string; capabilities?: string[]; active_runs: number; members: ProjectMember[]; more_members: number
+}
 
 export type Other = { name: string; active_runs: number; models: Record<string, number> }
 
