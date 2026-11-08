@@ -1,6 +1,6 @@
 {
   "name": "swarm2",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Swarm2 in Claude Code: the MCP connection (Keycloak OAuth), the working-with-swarm2 skill, and a live run pane with status line and toasts",
   "author": {
     "name": "NetConnect"
@@ -11,7 +11,7 @@
     "baseUrl": {
       "type": "string",
       "title": "Swarm2 URL",
-      "description": "Base URL of the Swarm2 service (prod by default; dev is https://swarm2-mcp-5ssd2i.netcompile.ro)",
+      "description": "Base URL of the Swarm2 service (production: https://swarm2-mcp.netconnect.ro)",
       "default": "https://swarm2-mcp.netconnect.ro"
     },
     "statusToken": {

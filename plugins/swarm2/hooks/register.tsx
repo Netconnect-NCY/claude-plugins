@@ -8,14 +8,13 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.2.0'
+export const PLUGIN_VERSION = '0.3.0'
 
-/** PROD for the production host, DEV for the known dev host, otherwise the host itself (a custom server). */
+/** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
   let host = base
   try { host = new URL(base).host } catch { /* shown as configured */ }
   if (host === 'swarm2-mcp.netconnect.ro') return { name: 'PROD', host }
-  if (host === 'swarm2-mcp-5ssd2i.netcompile.ro') return { name: 'DEV', host }
   return { name: host, host }
 }
 const PANE = 'swarm2'

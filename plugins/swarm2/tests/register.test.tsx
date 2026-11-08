@@ -344,17 +344,17 @@ test('the userConfig status token is used against the prod URL by default', { op
   for (const c of server.calls!) expect(c.authorization).toBe('Bearer s2s_configuredconfiguredtoken')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /● PROD/ })) ? 'found' : 'missing ● PROD').toBe('found')
-  expect((await ui.find({ type: 'Text', text: /plugin v0\.2\.0/ })) ? 'found' : 'missing plugin version').toBe('found')
+  expect((await ui.find({ type: 'Text', text: /plugin v0\.3\.0/ })) ? 'found' : 'missing plugin version').toBe('found')
   await ui.unmount()
 })
 
-test('a dev base URL is labelled DEV in the pane', { options: { statusToken: 's2s_configuredconfiguredtoken', baseUrl: 'https://swarm2-mcp-5ssd2i.netcompile.ro' } }, async ($, on) => {
+test('a custom base URL is labelled with its host in the pane', { options: { statusToken: 's2s_configuredconfiguredtoken', baseUrl: 'https://swarm2.example' } }, async ($, on) => {
   const server: Server = { control: null, status: { runs: [], deployments: [], messages: [] }, calls: [] }
   engine(on, server, [], null)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await command($, 'swarm2')
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /● DEV/ })) ? 'found' : 'missing ● DEV').toBe('found')
+  expect((await ui.find({ type: 'Text', text: /● swarm2\.example/ })) ? 'found' : 'missing custom host').toBe('found')
   await ui.unmount()
 })
 
