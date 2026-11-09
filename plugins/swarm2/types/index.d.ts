@@ -58,6 +58,22 @@ export type Run = {
   workers: EngineWorker[]
   tokens: number | null
   cost_usd: number | null
+  /** Latest routing decision; null before the first decision, absent on older servers. */
+  routing?: RunRouting | null
+}
+
+/** Bounded projection of a run's latest persisted routing decision. provider/model/effort are what the router REQUESTED, not
+ * proof of application (see the observed worker model in `workers`). */
+export type RunRouting = {
+  difficulty: 1 | 2 | 3 | 4 | 5
+  classification_source: 'model' | 'heuristic' | 'fallback' | null
+  provider: string | null
+  model: string | null
+  effort: string | null
+  /** Safe policy/reason text (enum words and catalog reason codes). */
+  why: string
+  /** Classification reasons; empty when the goal is hidden from the viewer or could not be redacted. */
+  reasons: string[]
 }
 
 export type ProjectMember = { name: string; role: string; you: boolean; active_runs: number }

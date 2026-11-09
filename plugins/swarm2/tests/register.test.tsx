@@ -122,6 +122,23 @@ test('the control feed fills every section, messages from the status feed', asyn
   }
 })
 
+test('a run shows its routing decision (requested, not observed); a run without one, or an older server, shows none', async ($, on) => {
+  const routing = {
+    difficulty: 5, classification_source: 'heuristic', provider: 'claude', model: 'claude-opus-5-5', effort: 'high',
+    why: 'lowest expected cost; policy hard frontier high', reasons: ['Whole-repository scope'],
+  }
+  engine(on, { control: { ...CONTROL, runs: [controlRun({ routing }), controlRun({ run_id: '22222222-aaaa-4aaa-8aaa-aaaaaaaaaaaa', routing: { difficulty: 99 } })] },
+    status: { runs: [statusRun()], deployments: [], messages: [] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /d5 \(heuristic\) → claude \/ claude-opus-5-5 \/ high requested/)
+  await has(ui, /policy hard frontier high/)
+  // The malformed decision on the second run is dropped, not rendered.
+  expect(await ui.find({ type: 'Text', text: /d99/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 const POOL_ACCOUNT = {
   id: 'p1', provider: 'openai', kind: 'api_key', label: 'Codex team key', owner: 'pool · Edi', health: 'ok',
   windows: [], observed_at: null, in_use: 0, engine_workers: 0, users: [],

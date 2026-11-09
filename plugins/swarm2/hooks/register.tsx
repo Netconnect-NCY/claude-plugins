@@ -1,6 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import { parseRouting, routingLine } from './routing'
 import type { Account, Attention, Deployment, Feed, Message, ProjectRow, Run, UsageWindow } from '../types'
 import {
   accountKey, accountToastFor, attentionToasts, visibleAttention, deploymentKey, deploymentPhase, deploymentToastFor, messageToasts, oneLine, runKey,
@@ -155,7 +156,7 @@ function withMergeDetail(runs: Run[], status: StatusBody | null): Run[] {
   const byId = new Map((status?.runs ?? []).map(r => [r.run_id, r]))
   return runs.map(r => {
     const s = byId.get(r.run_id)
-    return { ...r, merge_reason: s?.merge_reason ?? r.merge_reason ?? null, merge_sha: s?.merge_sha ?? r.merge_sha ?? null }
+    return { ...r, merge_reason: s?.merge_reason ?? r.merge_reason ?? null, merge_sha: s?.merge_sha ?? r.merge_sha ?? null, routing: parseRouting(r.routing) }
   })
 }
 
@@ -390,6 +391,7 @@ export const register: Register = (on, options) => {
           </Text>
         </Text>
         {r.status === 'waiting_quota' && <Text color="yellow" wrap="truncate-end">{indent}  {r.quota_resume_at ? `Earliest automatic retry ${r.quota_resume_at}` : 'Automatic retry pending'}</Text>}
+        {r.routing && <Text dimColor wrap="truncate-end">{indent}  ⇢ {routingLine(r.routing)}</Text>}
         {r.goal && <Text dimColor wrap="truncate-end">{indent}  “{r.goal}”</Text>}
         {r.workers.map(w => (
           <Text dimColor wrap="truncate-end">
