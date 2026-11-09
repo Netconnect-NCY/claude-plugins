@@ -185,3 +185,18 @@ describe('AI account failure toasts', () => {
     expect(attentionToasts(recovered.seen, [{ ...item, id: "credential:new-transition" }]).toasts).toEqual([`Swarm2 needs you: ${item.text}`])
   })
 })
+
+describe('observation toasts', () => {
+  test('health outcomes name observation and merged SHA, with cancellation distinct from success', () => {
+    const observing: Deployment = { ...deploying, source: 'external', status: 'verifying', phase: 'verifying',
+      outcome: null, merge_sha: 'b'.repeat(64) }
+    for (const [status, outcome, label] of [['succeeded', 'ok', 'ok'], ['failed', 'failed', 'failed'],
+      ['failed', 'timeout', 'timeout'], ['cancelled', null, 'cancelled']] as const) {
+      const done: Deployment = { ...observing, status, outcome, phase: status === 'succeeded' ? 'done' : 'failed' }
+      expect(deploymentToastFor(deploymentKey(observing), done))
+        .toBe(`Swarm2 observation acme/app → dev observed · ${label} · merged bbbbbbbb`)
+      expect(deploymentToastFor(undefined, done)).toBeNull()
+      expect(deploymentToastFor(deploymentKey(done), done)).toBeNull()
+    }
+  })
+})

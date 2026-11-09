@@ -397,3 +397,32 @@ test('status fallback synthesizes quota attention with unknown retry time', asyn
   for (const text of [/NEEDS YOU/, /waiting for quota/, /Automatic retry pending/]) await has(ui, text)
   await ui.unmount()
 })
+
+
+test('external observations render and toast through control and legacy status fallback', async ($, on) => {
+  const toasts: string[] = []
+  const observation = { source: 'external', outcome: null, merge_sha: 'abcdef12' + 'a'.repeat(32), status: 'verifying', phase: 'verifying' }
+  const server: Server = { control: { ...CONTROL, runs: [], attention: [], deployments: [deployment(observation)] },
+    status: { runs: [], deployments: [], messages: [] } }
+  engine(on, server, toasts)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /external · observing · merged abcdef12/)
+  expect(toasts).toEqual([])
+  for (const [status, outcome, label] of [['succeeded', 'ok', 'ok'], ['failed', 'failed', 'failed'],
+    ['failed', 'timeout', 'timeout'], ['cancelled', null, 'cancelled']] as const) {
+    const row = deployment({ ...observation, status, outcome, phase: status === 'succeeded' ? 'done' : 'failed' })
+    server.control = { ...CONTROL, runs: [], attention: [], deployments: [row] }
+    await command($, 'swarm2')
+    await has(ui, new RegExp(`external · observed · ${label} · merged abcdef12`))
+    expect(toasts[toasts.length - 1]).toBe(`Swarm2 observation acme/app → dev observed · ${label} · merged abcdef12`)
+    await command($, 'swarm2')
+  }
+  expect(toasts.length).toBe(4)
+  server.control = null
+  server.status = { runs: [], deployments: [deployment(observation)], messages: [] }
+  await command($, 'swarm2')
+  await has(ui, /external · observing · merged abcdef12/)
+  await ui.unmount()
+})

@@ -91,6 +91,11 @@ export type Other = { name: string; active_runs: number; models: Record<string, 
 export type Attention = { kind: string; id?: string; text: string; url: string | null }
 
 export type Deployment = {
+  /** Absent on older servers: treat as a Swarm-triggered deployment. */
+  source?: 'swarm' | 'external'
+  outcome?: 'ok' | 'failed' | 'timeout' | null
+  /** Verified merged commit; health observation does not prove the deployed revision. */
+  merge_sha?: string | null
   deployment_id: string
   repo: string
   target: string

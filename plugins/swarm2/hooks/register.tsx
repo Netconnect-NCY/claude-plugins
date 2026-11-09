@@ -4,7 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { parseRouting, routingLine } from './routing'
 import type { Account, Attention, Deployment, Feed, Message, ProjectRow, Run, UsageWindow } from '../types'
 import {
-  accountKey, accountToastFor, attentionToasts, visibleAttention, deploymentKey, deploymentPhase, deploymentToastFor, messageToasts, oneLine, runKey,
+  accountKey, accountToastFor, attentionToasts, visibleAttention, deploymentKey, deploymentPhase, deploymentToastFor, observationLabel, messageToasts, oneLine, runKey,
   TERMINAL, toastFor,
 } from './toasts'
 
@@ -525,7 +525,7 @@ export const register: Register = (on, options) => {
             </Text>
             {d.repo} → {d.target}
             <Text dimColor>
-              {' '}{d.status === 'succeeded' ? clock(d.updated_at) : deploymentPhase(d)}
+              {' '}{d.source === 'external' ? `external · ${observationLabel(d)}` : d.status === 'succeeded' ? clock(d.updated_at) : deploymentPhase(d)}
               {d.reason ? ` · ${oneLine(d.reason, 200)}` : ''}
               {d.pipeline_url && !DEPLOY_DONE.has(d.status) ? ` · ${d.pipeline_url}` : ''}
             </Text>

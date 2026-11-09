@@ -65,10 +65,21 @@ export function deploymentPhase(deployment: Deployment): string {
   return deployment.status
 }
 
-type DeploymentSnapshot = { phase: string; status: string }
+/** Describe health after a merge without claiming which revision is deployed. */
+export function observationLabel(deployment: Deployment): string {
+  const terminal = ['succeeded', 'failed', 'cancelled'].includes(deployment.status)
+  const result = deployment.status === 'cancelled' ? 'cancelled' : deployment.outcome ?? deployment.status
+  const sha = deployment.merge_sha && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(deployment.merge_sha)
+    ? ` · merged ${deployment.merge_sha.slice(0, 8)}` : ''
+  return `${terminal ? `observed · ${result}` : 'observing'}${sha}`
+}
+
+type DeploymentSnapshot = { phase: string; status: string; source?: string; outcome?: Deployment['outcome'] }
 
 export function deploymentKey(deployment: Deployment): string {
-  return JSON.stringify({ phase: deploymentPhase(deployment), status: deployment.status } satisfies DeploymentSnapshot)
+  return JSON.stringify({ phase: deploymentPhase(deployment), status: deployment.status,
+    ...(deployment.source === 'external' ? { source: deployment.source, outcome: deployment.outcome ?? null } : {}),
+  } satisfies DeploymentSnapshot)
 }
 
 /**
@@ -79,6 +90,11 @@ export function deploymentToastFor(prevKey: string | null | undefined, deploymen
   if (prevKey === undefined || prevKey === deploymentKey(deployment)) return null
   const prev = prevKey === null ? null : (JSON.parse(prevKey) as DeploymentSnapshot)
   const phase = deploymentPhase(deployment)
+  if (deployment.source === 'external') {
+    if (!['succeeded', 'failed', 'cancelled'].includes(deployment.status)
+      || (prev?.source === 'external' && prev.status === deployment.status && prev.outcome === (deployment.outcome ?? null))) return null
+    return `Swarm2 observation ${deployment.repo} → ${deployment.target} ${observationLabel(deployment)}${deployment.reason ? `: ${oneLine(deployment.reason, 160)}` : ''}`
+  }
   if (!DEPLOYMENT_TOAST_PHASES.has(phase) || prev?.phase === phase) return null
   const what = phase === 'done' ? 'deployed' : phase === 'failed' ? `failed (${deployment.status})` : 'awaiting approval'
   return `Swarm2 deploy ${deployment.repo} → ${deployment.target} ${what}${deployment.reason ? `: ${oneLine(deployment.reason, 160)}` : ''}`
