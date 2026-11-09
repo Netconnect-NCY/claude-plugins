@@ -149,7 +149,7 @@ export function attentionKey(item: Attention): string {
 /** seen null before the first load (records only); each new item of a kind no other rule covers toasts once. */
 export function attentionToasts(seen: ReadonlySet<string> | null, items: Attention[]): { toasts: string[]; seen: Set<string> } {
   // Remember identified invalid transitions across temporary disappearance (bounded account list or role changes).
-  const retained = [...(seen ?? [])].filter(key => key.startsWith('["account_invalid",'))
+  const retained = [...(seen ?? [])].filter(key => key.startsWith('["account_invalid",') || key.startsWith('["notice",'))
   const next = new Set([...retained, ...items.map(attentionKey)])
   for (const key of next) {
     if (next.size <= 1000) break
@@ -162,6 +162,6 @@ export function attentionToasts(seen: ReadonlySet<string> | null, items: Attenti
     if (emitted.has(key) || ATTENTION_TOASTED_ELSEWHERE.has(n.kind)) return false
     emitted.add(key)
     return true
-  }).map(n => `Swarm2 needs you: ${n.text}`)
+  }).map(n => n.kind === 'notice' ? `Swarm2: ${n.text}` : `Swarm2 needs you: ${n.text}`)
   return { toasts, seen: next }
 }

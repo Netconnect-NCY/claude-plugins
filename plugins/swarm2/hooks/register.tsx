@@ -9,7 +9,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.3.1'
+export const PLUGIN_VERSION = '0.3.2'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -481,7 +481,7 @@ export const register: Register = (on, options) => {
         {f.attention.length > 0 && <Text> </Text>}
         {f.attention.length > 0 && heading('NEEDS YOU')}
         {f.attention.map(n => (
-          <Text color={n.kind.endsWith('blocked') ? 'red' : 'yellow'} wrap="wrap">
+          <Text color={n.kind === 'notice' ? 'yellow' : n.kind.endsWith('blocked') ? 'red' : 'yellow'} wrap="wrap">
             ! {n.text}{n.url ? ` ${n.url}` : ''}
           </Text>
         ))}
