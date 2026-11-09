@@ -451,7 +451,7 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column" width={cols}>
         <Text wrap="truncate-end">
-          <Text weight="bold" color={env.name === 'PROD' ? 'red' : env.name === 'DEV' ? 'green' : 'yellow'}>● {env.name}</Text>
+          <Text weight="bold" color={env.name === 'PROD' ? undefined : env.name === 'DEV' ? 'green' : 'yellow'}>● {env.name}</Text>
           <Text dimColor> {env.host} · plugin v{PLUGIN_VERSION}</Text>
         </Text>
         {f.error && <Text color="yellow" wrap="wrap">{f.error}</Text>}
