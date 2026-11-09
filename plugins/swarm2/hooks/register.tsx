@@ -9,7 +9,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.3.0'
+export const PLUGIN_VERSION = '0.3.1'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -421,7 +421,7 @@ export const register: Register = (on, options) => {
           <Text weight="semibold">{p.repo}</Text>
           <Text dimColor> {p.role} · {p.active_runs > 0 ? `${p.active_runs} running` : 'idle'}</Text>
         </Text>
-        {(p.members.length > 0 || p.more_members > 0) && (
+        {(p.members.length > 0 || p.more_members > 0 || (p.pending_invites ?? 0) > 0) && (
           <Text wrap="truncate-end">
             {'    '}
             {p.members.map((m, i) => (
@@ -430,10 +430,11 @@ export const register: Register = (on, options) => {
                 {m.active_runs > 0 && <Text color="magenta">{spin} </Text>}
                 <Text color={m.active_runs > 0 ? 'magenta' : undefined}>{m.name}</Text>
                 {m.you && <Text weight="bold"> (you)</Text>}
-                <Text dimColor> {m.role}{m.active_runs > 1 ? ` ×${m.active_runs}` : ''}</Text>
+                <Text dimColor> {m.role}{m.branch_scope && m.branch_scope.length > 0 ? ` (${m.branch_scope.join(',')})` : ''}{m.active_runs > 1 ? ` ×${m.active_runs}` : ''}</Text>
               </Text>
             ))}
             {p.more_members > 0 && <Text dimColor>{p.members.length > 0 ? ' · ' : ''}+{p.more_members} more</Text>}
+            {(p.pending_invites ?? 0) > 0 && <Text dimColor> · {p.pending_invites} invite{p.pending_invites === 1 ? '' : 's'} pending</Text>}
           </Text>
         )}
         {mine.filter(r => r.repo === p.repo).map(r => runDetail(r, '    '))}
