@@ -118,17 +118,22 @@ export function messageToasts(seen: ReadonlySet<number> | null, messages: Messag
   return { toasts: fresh.map(messageToast), seen: next }
 }
 
-/** An account's alarm level: exhausted or invalid by health, `high` past 90% of any window, else ok. */
+/** An account's alarm level: exhausted, invalid or degraded by health, `high` past 90% of any window, else ok. */
 export function accountKey(account: Account): string {
-  if (account.health === 'exhausted' || account.health === 'invalid') return account.health
+  if (account.health === 'exhausted' || account.health === 'invalid' || account.health === 'degraded') return account.health
   const worst = Math.max(0, ...account.windows.map(w => w.used_pct ?? 0))
   return worst >= 90 ? 'high' : 'ok'
 }
 
-/** prevKey undefined (first seen) never toasts; a change into a non-ok level does. */
+/** prevKey undefined (first seen) never toasts; a change into a non-ok level does. Invalid names the repair, not the failure. */
 export function accountToastFor(prevKey: string | undefined, account: Account): string | null {
   const key = accountKey(account)
   if (prevKey === undefined || prevKey === key || key === 'ok') return null
+  // Modern feeds send an owner-gated account_invalid attention item; that is the sole invalid toast.
+  // Older feeds have no attention flag: only personal accounts may use this fallback.
+  if (key === 'invalid') return account.attention === undefined && account.owner === 'you'
+    ? `Swarm2: ${account.provider} (${account.owner}) is invalid` : null
+
   return key === 'high'
     ? `Swarm2: ${account.provider} (${account.owner}) is past 90% of its limit`
     : `Swarm2: ${account.provider} (${account.owner}) is ${key}`
@@ -138,15 +143,25 @@ export function accountToastFor(prevKey: string | undefined, account: Account): 
 const ATTENTION_TOASTED_ELSEWHERE = new Set(['deploy_approval', 'run_blocked', 'blocked'])
 
 export function attentionKey(item: Attention): string {
-  return JSON.stringify([item.kind, item.text])
+  return JSON.stringify([item.kind, item.id ?? item.text])
 }
 
 /** seen null before the first load (records only); each new item of a kind no other rule covers toasts once. */
 export function attentionToasts(seen: ReadonlySet<string> | null, items: Attention[]): { toasts: string[]; seen: Set<string> } {
-  const next = new Set(items.map(attentionKey))
+  // Remember identified invalid transitions across temporary disappearance (bounded account list or role changes).
+  const retained = [...(seen ?? [])].filter(key => key.startsWith('["account_invalid",'))
+  const next = new Set([...retained, ...items.map(attentionKey)])
+  for (const key of next) {
+    if (next.size <= 1000) break
+    next.delete(key)
+  }
   if (seen === null) return { toasts: [], seen: next }
-  const toasts = items
-    .filter(n => !seen.has(attentionKey(n)) && !ATTENTION_TOASTED_ELSEWHERE.has(n.kind))
-    .map(n => `Swarm2 needs you: ${n.text}`)
+  const emitted = new Set(seen)
+  const toasts = items.filter(n => {
+    const key = attentionKey(n)
+    if (emitted.has(key) || ATTENTION_TOASTED_ELSEWHERE.has(n.kind)) return false
+    emitted.add(key)
+    return true
+  }).map(n => `Swarm2 needs you: ${n.text}`)
   return { toasts, seen: next }
 }

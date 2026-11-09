@@ -154,3 +154,34 @@ describe('account and attention toasts', () => {
     expect(attentionToasts(second.seen, [{ kind: 'run_blocked', text: 'acme/app: run blocked', url: null }]).toasts).toEqual([])
   })
 })
+
+describe('AI account failure toasts', () => {
+  const account: Account = {
+    id: 'a1', provider: 'anthropic', kind: 'api_key', label: null, owner: 'you', health: 'ok',
+    windows: [{ name: '5h', used_pct: 50, resets_at: null }], observed_at: null, in_use: 0, engine_workers: 0, users: [],
+  }
+
+  test('degraded is an alarm level; first sight never toasts; invalid names the repair', () => {
+    const degraded: Account = { ...account, health: 'degraded', health_since: '2026-11-08T10:00:00Z', last_error: 'rate_limited (HTTP 429)' }
+    expect(accountKey(degraded)).toBe('degraded')
+    expect(accountToastFor(undefined, degraded)).toBeNull()
+    expect(accountToastFor(accountKey(account), degraded)).toBe('Swarm2: anthropic (you) is degraded')
+    const invalid: Account = { ...account, health: 'invalid', attention: true }
+    expect(accountToastFor(accountKey(account), invalid))
+      .toBeNull()
+    expect(accountToastFor(accountKey(account), { ...account, health: 'invalid' })).toBe('Swarm2: anthropic (you) is invalid')
+    expect(accountToastFor(accountKey(account), { ...account, health: 'exhausted' })).toBe('Swarm2: anthropic (you) is exhausted')
+  })
+
+  test('account_invalid attention toasts once per transition, without replaying the first poll', () => {
+    const item = { kind: 'account_invalid', text: 'Your Anthropic account is invalid: dispatch skips it until you replace the credential',
+      url: 'https://swarm.test/me/credentials' }
+    const first = attentionToasts(null, [item])
+    expect(first.toasts).toEqual([])
+    expect(attentionToasts(first.seen, [item]).toasts).toEqual([])
+    expect(attentionToasts(new Set(), [item]).toasts).toEqual([`Swarm2 needs you: ${item.text}`])
+    const recovered = attentionToasts(first.seen, [])
+    expect(attentionToasts(recovered.seen, [item]).toasts).toEqual([])
+    expect(attentionToasts(recovered.seen, [{ ...item, id: "credential:new-transition" }]).toasts).toEqual([`Swarm2 needs you: ${item.text}`])
+  })
+})

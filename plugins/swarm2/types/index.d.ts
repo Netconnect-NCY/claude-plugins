@@ -12,8 +12,17 @@ export type Account = {
   label: string | null
   /** "you", or "pool · <contributor>" */
   owner: string
-  /** ok | cooling | exhausted | invalid | unknown */
+  /** ok | cooling | degraded | exhausted | invalid | unknown (degraded: provider rate limit / 5xx on the current version) */
   health: string
+  /** Since when the degraded/invalid state has held; null when healthy, unknown, or an older server. */
+  health_since?: string | null
+  /** Generic redacted reason for failure health or cooldown (kind + HTTP status); null when healthy, hidden for pool accounts a
+   * member views, or an older server. Never another user's run content. */
+  last_error?: string | null
+  /** True when invalid and dispatch skips this account until its owner replaces the credential; absent on older servers. */
+  attention?: boolean
+  /** Current invalid transition timestamp; visible to the owner or pool admin only. */
+  notified_at?: string | null
   windows: UsageWindow[]
   observed_at: string | null
   in_use: number
@@ -60,7 +69,7 @@ export type ProjectRow = {
 
 export type Other = { name: string; active_runs: number; models: Record<string, number> }
 
-export type Attention = { kind: string; text: string; url: string | null }
+export type Attention = { kind: string; id?: string; text: string; url: string | null }
 
 export type Deployment = {
   deployment_id: string

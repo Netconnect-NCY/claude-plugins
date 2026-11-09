@@ -46,6 +46,8 @@ const seenAccounts = new Map<string, string>()
 // null until the first successful load, which records what exists without toasting it.
 let seenMessages: Set<number> | null = null
 let seenAttention: Set<string> | null = null
+// The legacy status fallback has no account attention; only a successful control load seeds this history.
+let seenAccountAttention: Set<string> | null = null
 let loaded = false
 let lastMessages: Message[] = []
 let spinner: { cancel: () => void } | null = null
@@ -106,7 +108,7 @@ function windowLabel(w: UsageWindow): string {
 
 function accountColor(a: Account): string | undefined {
   if (a.health === 'exhausted' || a.health === 'invalid') return 'red'
-  if (a.health === 'cooling' || a.windows.some(w => (w.used_pct ?? 0) >= 80)) return 'yellow'
+  if (a.health === 'cooling' || a.health === 'degraded' || a.windows.some(w => (w.used_pct ?? 0) >= 80)) return 'yellow'
   if (a.health === 'ok') return 'green'
   return undefined
 }
@@ -189,9 +191,14 @@ function toastChanges($: EngineInterface, f: Feed, messagesKnown: boolean): void
     if (toast) $.ui.toast(toast)
     seenAccounts.set(a.id, accountKey(a))
   }
-  const attention = attentionToasts(seenAttention, f.attention)
+  const attention = attentionToasts(seenAttention, f.attention.filter(a => a.kind !== 'account_invalid'))
   for (const toast of attention.toasts) $.ui.toast(toast)
   seenAttention = attention.seen
+  if (f.source === 'control') {
+    const accounts = attentionToasts(seenAccountAttention, f.attention.filter(a => a.kind === 'account_invalid'))
+    for (const toast of accounts.toasts) $.ui.toast(toast)
+    seenAccountAttention = accounts.seen
+  }
   loaded = true
 }
 
@@ -356,6 +363,12 @@ export const register: Register = (on, options) => {
           {a.health !== 'ok' && a.health !== 'unknown' && <Text color="red">{a.health} </Text>}
           {a.observed_at && <Text dimColor>seen {ago(a.observed_at)} ago</Text>}
         </Text>
+        {(a.health === 'invalid' || a.health === 'degraded' || a.health === 'exhausted' || a.health === 'cooling') && (a.last_error || a.health_since) && (
+          <Text wrap="truncate-end" color={a.health === 'invalid' ? 'red' : 'yellow'}>
+            {'  ↯ '}{a.last_error ?? a.health}{a.health_since ? ` since ${ago(a.health_since)}` : ''}
+            {a.attention ? ' — replace the credential to repair' : ''}
+          </Text>
+        )}
         {a.users.length > 0 && (
           <Text dimColor wrap="truncate-end">  used by {a.users.map(u => `${u.name}×${u.count}`).join(', ')}</Text>
         )}
