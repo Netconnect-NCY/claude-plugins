@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import { parseLocalCommand } from './guard'
-import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, setLocal } from './guard-hook'
+import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, setLocal, setOverrideReporter } from './guard-hook'
 import { parseRouting, routingLine } from './routing'
 import type { Account, Attention, Deployment, Feed, Message, ProjectRow, Run, UsageWindow } from '../types'
 import {
@@ -331,6 +331,14 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
 export const register: Register = (on, options) => {
   const token = typeof options.statusToken === 'string' ? options.statusToken.trim() : ''
   const base = String(options.baseUrl || DEFAULT_BASE).replace(/\/+$/, '')
+
+  setOverrideReporter(async ($, entry) => {
+    const t = (await tokenCandidates($, token))[0]
+    if (!t) return
+    await $.http.fetch(`${base}/me/guard/override`, {
+      method: 'POST', headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' }, body: JSON.stringify(entry),
+    })
+  })
 
   on('session.start', async ($, e, next) => {
     sessionOverride = false // an override is session-scoped; a persisted value from an earlier session never outranks the setting

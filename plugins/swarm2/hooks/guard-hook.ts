@@ -98,11 +98,20 @@ export async function isLocalOn($: EngineInterface): Promise<boolean> {
   try { return (await $.state.get({ plugin: 'swarm2', key: 'localEdits' })).value === true } catch { return false }
 }
 
-/** Sets this session's override and appends the audit entry. */
+/** Reports an override to Swarm2 (set by register.tsx, which knows the base URL and token). Best-effort: it never blocks. */
+export type OverrideReporter = ($: EngineInterface, entry: LocalAuditEntry) => Promise<void>
+let reporter: OverrideReporter | null = null
+export function setOverrideReporter(fn: OverrideReporter | null): void { reporter = fn }
+
+/** Sets this session's override, appends the local audit entry and reports it to Swarm2 (best-effort: a failed or slow
+ * report never blocks the override). The hook is a safety net, not enforcement. */
 export async function setLocal($: EngineInterface, value: 'on' | 'off', source: LocalAuditEntry['source'] = 'command'): Promise<void> {
   if (source === 'command') await $.state.set({ plugin: 'swarm2', key: 'localEdits' }, value === 'on')
   const entry: LocalAuditEntry = { at: new Date().toISOString(), session: await sessionId($), value, source }
-  await $.store.set(AUDIT_KEY, appendAudit(await $.store.get(AUDIT_KEY), entry))
+  try { await $.store.set(AUDIT_KEY, appendAudit(await $.store.get(AUDIT_KEY), entry)) } catch { /* the local log is secondary */ }
+  if (reporter) {
+    try { await Promise.race([reporter($, entry), new Promise<void>(r => setTimeout(r, 4000))]) } catch { /* best-effort */ }
+  }
 }
 
 /** At session start: the home directory (for `~` in commands) and the SWARM2_LOCAL_EDITS opt-out of an automated

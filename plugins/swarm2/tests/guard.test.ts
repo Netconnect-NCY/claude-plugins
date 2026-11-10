@@ -22,7 +22,7 @@ test('remote URLs normalize to lower-case owner/repo across ssh, https and .git 
     'https://github.com/Acme/App', 'https://github.com/Acme/App.git', 'https://github.com/Acme/App/', 'https://x-access-token:abc@github.com/acme/APP.git',
     'git://github.com/acme/app.git', 'github.com:acme/app.git',
   ]) expect(normalizeRemote(url)).toBe('acme/app')
-  for (const url of ['', '/srv/git/app', './app', 'file:///srv/git/acme/app.git', 'C:/repos/app', 'https://github.com/']) expect(normalizeRemote(url)).toBe(null)
+  for (const url of ['https://gitlab.com/acme/app.git', 'git@bitbucket.org:acme/app.git', 'https://github.com.evil.test/acme/app', 'https://evil.test/github.com/acme/app', '', '/srv/git/app', './app', 'file:///srv/git/acme/app.git', 'C:/repos/app', 'https://github.com/']) expect(normalizeRemote(url)).toBe(null)
 })
 
 test('git remote -v output yields the distinct repositories, matched case-insensitively against the project list', () => {
@@ -153,6 +153,10 @@ type Host = {
   storeThrows?: boolean
   /** what swarm_projects answers (the fake core answers 'ran' to every other call) */
   projectsAnswer?: string
+  /** POSTs the plugin made to Swarm2 (url, bearer, body) */
+  posts?: { url: string; auth: string | undefined; body: unknown }[]
+  /** the report endpoint fails (HTTP 500) or throws */
+  reportFails?: 'status' | 'throw'
 }
 
 function host(over: Partial<Host> = {}): Host {
@@ -175,7 +179,16 @@ function engine(on: On, h: Host) {
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('clock.every', () => ({ value: undefined }))
-  on('http.fetch', () => ({ value: { status: 404, ok: false, headers: {}, text: '' } }))
+  on('http.fetch', (_, e) => {
+    const init = e as unknown as { url: string; method?: string; headers?: Record<string, string>; body?: string }
+    if (init.method === 'POST') {
+      if (h.reportFails === 'throw') throw new Error('network down')
+      h.posts?.push({ url: init.url, auth: init.headers?.authorization, body: JSON.parse(init.body ?? 'null') })
+      if (h.reportFails === 'status') return { value: { status: 500, ok: false, headers: {}, text: '' } }
+      return { value: { status: 202, ok: true, headers: {}, text: '{"ok":true}' } }
+    }
+    return { value: { status: 404, ok: false, headers: {}, text: '' } }
+  })
   on('store.get', (_, e) => {
     if (h.storeThrows) throw new Error('store broken')
     return { value: (h.store.get(e.key) ?? null) as never }
@@ -306,4 +319,42 @@ test('a store that throws on read fails open', async ($, on) => {
   engine(on, h)
   await start($)
   expect(await outcome($, { tool: 'Bash', command: 'git commit -m x' })).toBe('ran')
+})
+
+test('only the origin remote on github.com decides whether a checkout is a Swarm2 repo', async ($, on) => {
+  const out = 'upstream\tgit@github.com:Acme/App.git (fetch)\nfork\thttps://github.com/acme/app (fetch)\norigin\thttps://github.com/me/other (fetch)\n'
+  expect(parseRemotes(out)).toEqual(['me/other'])
+  expect(parseRemotes('origin\thttps://gitlab.com/acme/app.git (fetch)\n')).toEqual([])
+  const h = host({ remotes: { '/repo': out } })
+  engine(on, h)
+  await start($)
+  expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('ran')
+  h.remotes['/repo'] = 'origin\thttps://gitlab.com/acme/app.git (fetch)\n'
+  resetGuardMemory()
+  expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('ran')
+})
+
+test('a /swarm2-local override is reported to Swarm2 as an audit event, best-effort', async ($, on) => {
+  const h = host({ posts: [] })
+  h.store.set('statusToken', 's2s_test')
+  engine(on, h)
+  await start($)
+  await command($, 'swarm2-local', 'on')
+  await command($, 'swarm2-local', 'off')
+  expect(h.posts!.map(p => [p.url.endsWith('/me/guard/override'), p.auth, (p.body as LocalAuditEntry).session, (p.body as LocalAuditEntry).value, (p.body as LocalAuditEntry).source]))
+    .toEqual([[true, 'Bearer s2s_test', 'sess-1', 'on', 'command'], [true, 'Bearer s2s_test', 'sess-1', 'off', 'command']])
+  // local audit still written
+  expect((h.store.get('localEditsAudit') as LocalAuditEntry[]).length).toBe(2)
+})
+
+test('a failing report never blocks the override', async ($, on) => {
+  for (const reportFails of ['status', 'throw'] as const) {
+    const h = host({ posts: [], reportFails })
+    h.store.set('statusToken', 's2s_test')
+    engine(on, h)
+    await start($)
+    expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
+    expect(await outcome($, { tool: 'Bash', command: 'git commit -m x' })).toBe('ran')
+    expect((h.store.get('localEditsAudit') as LocalAuditEntry[]).length).toBe(1)
+  }
 })

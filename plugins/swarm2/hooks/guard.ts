@@ -17,8 +17,9 @@ export type LocalAuditEntry = { at: string; session: string; value: 'on' | 'off'
 // ---------------------------------------------------------------------------------------------------------------------
 // Remotes and projects
 
-/** `owner/repo`, lower-cased, from any git remote URL spelling (ssh scp-like, ssh://, https with credentials, git://,
- * trailing `.git` or `/`); null for something that names no repository (a local path, an empty line). */
+/** `owner/repo`, lower-cased, from any github.com git remote URL spelling (ssh scp-like, ssh://, https with credentials,
+ * git://, trailing `.git` or `/`); null for something that names no GitHub repository (another host, a local path, an
+ * empty line). */
 export function normalizeRemote(url: string): string | null {
   let s = url.trim()
   if (!s) return null
@@ -29,11 +30,13 @@ export function normalizeRemote(url: string): string | null {
     s = s.slice(scheme[0].length)
     const slash = s.indexOf('/')
     if (slash < 0) return null
+    const host = s.slice(0, slash).replace(/^[^@]*@/, '').replace(/:\d*$/, '')
+    if (host.toLowerCase() !== 'github.com') return null
     path = s.slice(slash + 1)
   } else {
     // scp-like user@host:owner/repo; a bare local path has no colon before its first slash
     const m = /^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/.exec(s)
-    if (!m || m[1]!.length === 1) return null // a single letter is a Windows drive, not a host
+    if (!m || m[1]!.toLowerCase() !== 'github.com') return null // another host, or a Windows drive letter
     path = m[2]!
   }
   const parts = path.split(/[?#]/)[0]!.replace(/\/+$/, '').replace(/\.git$/i, '').split('/').filter(Boolean)
@@ -44,11 +47,12 @@ export function normalizeRemote(url: string): string | null {
   return `${owner}/${repo}`.toLowerCase()
 }
 
-/** The distinct repositories `git remote -v` names. */
+/** The distinct GitHub repositories the `origin` remote of `git remote -v` names (upstream and fork remotes do not count). */
 export function parseRemotes(output: string): string[] {
   const out = new Set<string>()
   for (const line of output.split('\n')) {
-    const url = line.trim().split(/\s+/)[1]
+    const [name, url] = line.trim().split(/\s+/)
+    if (name !== 'origin') continue
     const repo = url ? normalizeRemote(url) : null
     if (repo) out.add(repo)
   }
