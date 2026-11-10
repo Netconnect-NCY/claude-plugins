@@ -16,6 +16,17 @@ Production is the only deployed service: `https://swarm2-mcp.netconnect.ro/mcp`.
 
 A configurable repository denylist fails with `forbidden_repo`; no fixed repository names are forbidden by default. Check membership, denylist and user authorization before registering or changing any repository.
 
+## Code navigation: prefer these over grep
+
+For "where is X defined / who uses it / who calls it / what is in this file", call the index tools before grepping (all read-only, cache-only, repository-derived untrusted text; they never start a run):
+
+- `swarm_code_definition({repo,ref?,symbol | path,line,character})` — where a symbol is declared; `swarm_code_references` — its uses (definition excluded); `swarm_code_callers` — direct call sites with the calling function.
+- `swarm_code_symbols({repo,ref?,query,kind?,language?,path_prefix?})` — find a symbol by name when you do not know the file; `swarm_code_outline({repo,ref?,path})` — the declarations of one file.
+- Selector is either `symbol` or `path`+`line`+`character` (0-based), never both. Use the same full SHA or unique 7+ hex `ref` for a sequence of calls (or omit it for the latest cached index) and retain the returned `sha`; branch/tag names are refused. Pass `next_cursor` back as `cursor` with identical other inputs only; a cursor from a different query is `invalid_input`.
+- `precision: "exact"` (SCIP) can be relied on; `"approximate"` (lexical fallback, name-based) gives leads: open the file and check before acting. `partial: true` / `unindexed_packages` list directories the index does not cover.
+- `not_indexed`, `index_unavailable` (see `reason`), `withheld` or `not_found`: fall back to `swarm_code_map` and grep/file inspection; do not retry in a loop. Details: docs/CODE_NAV.md.
+- Inside a run's worker, the same queries are available as `bun run /app/src/code-nav/cli.ts <command> ...` on the working tree.
+
 ## 2. Check rights, credentials and consent
 
 Default roles (effective capability overrides and run privacy still apply):

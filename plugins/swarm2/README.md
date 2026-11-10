@@ -35,7 +35,7 @@ The MCP server sends initialize `instructions` directing clients through `swarm_
 
 ## Work protocol
 
-After opening the project, call `swarm_context_search` / `swarm_context_get` before planning and `swarm_code_map({repo,ref?,query?})` for bounded, read-only orientation at a resolved base SHA. Save decisions during work with `swarm_memory_propose` (`type:"decision"`). Check active claims, submit narrow authorized paths with a real acceptance command, and preserve exact head/verifier/test evidence in a checkpoint. Success, PR publication, merge and deployment are separate outcomes.
+After opening the project, call `swarm_context_search` / `swarm_context_get` before planning and `swarm_code_map({repo,ref?,query?})` for bounded, read-only orientation at a resolved base SHA. For definitions, references, callers, symbol search and file outlines prefer `swarm_code_definition`, `swarm_code_references`, `swarm_code_callers`, `swarm_code_symbols` and `swarm_code_outline` (cache-only; `not_indexed`/`index_unavailable` start no work, fall back to the map or grep; see docs/CODE_NAV.md). Save decisions during work with `swarm_memory_propose` (`type:"decision"`). Check active claims, submit narrow authorized paths with a real acceptance command, and preserve exact head/verifier/test evidence in a checkpoint. Success, PR publication, merge and deployment are separate outcomes.
 
 Default roles are viewer (reads), developer (plans/memory/own runs/PRs), maintainer (also scope approval/merge/deploy requests), owner (also settings/members/targets/production approval). Effective overrides, non-owner `branch_scope` and private-run visibility still apply.
 
