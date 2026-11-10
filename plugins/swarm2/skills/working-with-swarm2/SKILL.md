@@ -7,6 +7,18 @@ description: Use with the Swarm2 MCP connection to recover project context, plan
 
 Production is the only deployed service: `https://swarm2-mcp.netconnect.ro/mcp`. The service dev environment was decommissioned on 2026-11-08. Target repositories still support `dev` and `prod` deployment targets. MCP uses HTTPS Streamable HTTP, Keycloak realm `netconnect`, public client `swarm2-mcp`, authorization code + PKCE, no client secret. An enabled external GitHub issuer separately advertises public-client DCR through discovery metadata. Client-specific callback support must be verified; see [client guides](../../../../docs/clients/generic-mcp.md).
 
+## The rule: Swarm2 writes the code
+
+Owner decision (2026-11-10): code for a project registered in Swarm2 is written only by Swarm2, on the server. The connected AI (you) plans, reads, reviews and gives instructions; it does not edit the checkout, commit or push.
+
+**Plan locally → swarm_plan_propose; implement only via Swarm2 runs (swarm_task_submit); review and steer.**
+
+- **Plan locally.** Read the code, search it, run read-only commands and tests in your checkout, and draft the plan there (a plan file outside the repository is fine). Read the current plan with `swarm_plan_get({repo})`, then send yours with `swarm_plan_propose`; on a server without these tools, `swarm_plan_save` stores a plan revision. Record decisions with `swarm_memory_propose`.
+- **Implement only via Swarm2 runs.** Submit the change with `swarm_task_submit`. Do not edit files in the repository, and do not run `git commit`, `git push`, `git apply`, `git merge`, `git rebase` and the like in it.
+- **Review and steer.** Follow the run (`swarm_run_get`, `swarm_run_events`), steer it with `swarm_run_steer`, continue it with `swarm_run_resume`, and review the PR it opens (`gh pr view`, `gh pr diff`, `gh pr review`).
+
+The Claude Code plugin enforces this rule. In a checkout whose git remote matches one of your Swarm2 projects, or that has `.swarm2/project.yaml` at its root, it refuses Edit, Write, MultiEdit, NotebookEdit, and Bash commands that write into the repository or commit/push, with: "This repo is worked on through Swarm2 — submit a job (swarm_task_submit) or send a plan (swarm_plan_propose) instead". Reads, searches, tests, `gh pr view/diff/review`, writes outside the repository (`/tmp`, `~/.claude`, plan files) and every Swarm2 MCP call are never blocked. If the person explicitly wants a local edit, they can run `/swarm2-local on` for this session; it is recorded in an audit log and shown in the pane as "local edits ON". `/swarm2-local off` turns the guard back on. Never ask for the override to get around a refusal: submit a job or send a plan.
+
 ## 1. Recover context before planning
 
 1. Call `swarm_capabilities`, `swarm_projects`, then `swarm_open_project({repo})` for a returned, authorized `owner/name`. Reload at a new chat and before state-dependent decisions. Read the current plan revision, decisions, checkpoints, active runs, role and effective capabilities.

@@ -367,7 +367,7 @@ test('the userConfig status token is used against the prod URL by default', { op
   for (const c of server.calls!) expect(c.authorization).toBe('Bearer s2s_configuredconfiguredtoken')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /● PROD/ })) ? 'found' : 'missing ● PROD').toBe('found')
-  expect((await ui.find({ type: 'Text', text: /plugin v0\.3\.3/ })) ? 'found' : 'missing plugin version').toBe('found')
+  expect((await ui.find({ type: 'Text', text: /plugin v0\.4\.0/ })) ? 'found' : 'missing plugin version').toBe('found')
   await ui.unmount()
 })
 

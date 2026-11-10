@@ -5,6 +5,7 @@ One install gives you:
 - **The Swarm2 MCP server** (`swarm2`). It logs in with NetConnect Keycloak using the pre-registered public OAuth client `swarm2-mcp` (Claude Code callback port 33418).
 - **The shared `working-with-swarm2` skill.** It tells the agent how to open a project, save decisions, submit work, resume (Claude ↔ Codex), steer, and use members, messages and Git memory.
 - **The live control pane in Claude Code.** `/swarm2` opens the pane, with a spinner while work is active, a status line and toasts. Nothing from the pane is sent to the model.
+- **The local-edit guard in Claude Code.** In a checkout of a Swarm2 project it refuses local edits and commits: Swarm2 writes the code (see [below](#local-edit-guard)).
 
 ## Install in Claude Code
 
@@ -15,7 +16,7 @@ Run these commands in Claude Code:
 /plugin install swarm2@netconnect
 ```
 
-Plugin **0.3.3** targets `https://swarm2-mcp.netconnect.ro`, the only deployed environment. Service dev was decommissioned on 2026-11-08. Its `baseUrl` setting supplies `${user_config.baseUrl}/mcp` and the pane URL. Target repositories still support dev/prod deployment APIs.
+Plugin **0.4.0** targets `https://swarm2-mcp.netconnect.ro`, the only deployed environment. Service dev was decommissioned on 2026-11-08. Its `baseUrl` setting supplies `${user_config.baseUrl}/mcp` and the pane URL. Target repositories still support dev/prod deployment APIs.
 
 If the marketplace is unavailable, add the MCP server manually instead:
 
@@ -35,6 +36,27 @@ That fallback connects the server only; the plugin supplies the pane and bundled
 
 The MCP server sends initialize `instructions` directing clients through `swarm_capabilities` → `swarm_projects` → `swarm_open_project`. Choose an authorized project returned by the server, then follow the [bundled skill](skills/working-with-swarm2/SKILL.md).
 
+<a id="local-edit-guard"></a>
+
+## The rule and the local-edit guard
+
+Owner decision (2026-11-10): code for Swarm2 projects is written only by Swarm2, on the server. Your connected AI plans, reads, reviews and gives instructions:
+
+**Plan locally → swarm_plan_propose; implement only via Swarm2 runs (swarm_task_submit); review and steer.**
+
+Read the current plan with `swarm_plan_get`, send yours with `swarm_plan_propose` (or `swarm_plan_save` on a server without them), submit the work with `swarm_task_submit`, then follow, steer and review the run and its PR.
+
+In Claude Code the plugin enforces the rule with a `tool.call` guard (`hooks/guard.ts` classifies, `hooks/guard-hook.ts` looks up the checkout). A checkout counts as a Swarm2 project when:
+
+- one of its `git remote -v` URLs names a repository in your Swarm2 project list (ssh, https and `.git` spellings normalized, owner/repo compared case-insensitively). The list comes from the pane's control feed and from any `swarm_projects` call, and is cached in the plugin store for 7 days; or
+- it has `.swarm2/project.yaml` at its root (no list needed).
+
+There it refuses Edit, Write, MultiEdit and NotebookEdit on files in the repository, and Bash commands that write into it or change its history: redirections (`>`, `>>`), `tee`, `sed -i`/`perl -i`, `mv`/`cp`/`rm`/`touch`/`mkdir`/`ln`/`chmod` into the tree, `git commit/push/apply/am/cherry-pick/merge/rebase/reset/checkout/stash/add`…, package changes (`npm install <pkg>`, `bun add`…) and formatters that write (`prettier --write`, `eslint --fix`…). The refusal reads: "This repo is worked on through Swarm2 — submit a job (swarm_task_submit) or send a plan (swarm_plan_propose) instead".
+
+Never refused: reads, searches, `ls`/`cat`/`grep`, tests and builds, `git status/log/diff/show/fetch`, `gh pr view/diff/review`, writes outside the repository (`/tmp`, `~/.claude`, plan files), and every MCP call (plans and decisions sent to Swarm2 included). The guard fails open: if the checkout, its remotes or the project list cannot be read, the call runs. It reads commands statically, so it is a guard rail, not a sandbox.
+
+**Override.** `/swarm2-local on` allows local edits for the current session; `/swarm2-local off` turns the guard back on; `/swarm2-local` shows the setting. Each change is appended to an audit log in the plugin store (`localEditsAudit`: timestamp, session id, value; the newest 1000 entries are kept), and while it is on the pane shows a red **local edits ON** line and the status line says so. An automated environment (for example a CI or server-side agent with this plugin installed) can set `SWARM2_LOCAL_EDITS=1` before starting Claude Code; that is audited too, with source `env`.
+
 ## Work protocol
 
 After opening the project, call `swarm_context_search` / `swarm_context_get` before planning and `swarm_code_map({repo,ref?,query?})` for bounded, read-only orientation at a resolved base SHA. For definitions, references, callers, symbol search and file outlines prefer `swarm_code_definition`, `swarm_code_references`, `swarm_code_callers`, `swarm_code_symbols` and `swarm_code_outline` (cache-only; `not_indexed`/`index_unavailable` start no work, fall back to the map or grep; see docs/CODE_NAV.md). Save decisions during work with `swarm_memory_propose` (`type:"decision"`). Check active claims, submit narrow authorized paths with a real acceptance command, and preserve exact head/verifier/test evidence in a checkpoint. Success, PR publication, merge and deployment are separate outcomes.
@@ -53,6 +75,7 @@ See the [skill](skills/working-with-swarm2/SKILL.md) for exact procedures and [c
 
 - `/swarm2` opens the control pane.
 - `/swarm2-token s2s_…` sets its read-only status token; the plugin's `statusToken` setting is the alternative.
+- `/swarm2-local on|off` allows or blocks local edits to Swarm2 repos for this session (audited; see [the local-edit guard](#local-edit-guard)).
 
 The pane polls `GET <baseUrl>/me/control` with `Authorization: Bearer <statusToken>`, falling back to `GET <baseUrl>/me/runs/status` for older servers. It shows a spinner during active work and keeps the status line. The control sections are:
 

@@ -150,6 +150,6 @@ export type Feed = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'swarm2': { feed: Shaped<Feed>; frame: number }
+    'swarm2': { feed: Shaped<Feed>; frame: number; localEdits: boolean }
   }
 }

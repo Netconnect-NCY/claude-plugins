@@ -1,6 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import { parseLocalCommand } from './guard'
+import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, setLocal } from './guard-hook'
 import { parseRouting, routingLine } from './routing'
 import type { Account, Attention, Deployment, Feed, Message, ProjectRow, Run, UsageWindow } from '../types'
 import {
@@ -9,7 +11,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.3.3'
+export const PLUGIN_VERSION = '0.4.0'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -39,6 +41,8 @@ const EMPTY: Feed = {
 // a value stored under either is read as EMPTY.
 const feed = atom({ plugin: 'swarm2', key: 'feed' } as const, EMPTY, { shape: 'feed-3' })
 const frame = atom({ plugin: 'swarm2', key: 'frame' } as const, 0)
+// the session's /swarm2-local override (written by guard-hook.ts through $.state under the same key)
+const localEdits = atom({ plugin: 'swarm2', key: 'localEdits' } as const, false)
 
 // The module's own memory of what it has shown; it starts over on reload, which only costs a missed toast.
 const seenRuns = new Map<string, string>()
@@ -203,7 +207,7 @@ function toastChanges($: EngineInterface, f: Feed, messagesKnown: boolean): void
   loaded = true
 }
 
-function statusLine(f: Feed, env = ''): string | undefined {
+function statusLine(f: Feed, env = '', local = false): string | undefined {
   const waiting = f.runs.filter(r => r.status === 'waiting_quota').length
   const active = f.runs.filter(r => isActive(r) && r.status !== 'waiting_quota').length + f.others.reduce((n, o) => n + o.active_runs, 0)
   const deploying = f.deployments.filter(d => !DEPLOY_DONE.has(d.status) && deploymentPhase(d) !== 'awaiting_approval').length
@@ -217,6 +221,7 @@ function statusLine(f: Feed, env = ''): string | undefined {
   if (deploying) parts.push(`${deploying} deploying`)
   if (f.attention.length) parts.push(`${f.attention.length} need you`)
   if (tight && active) parts.push(`${tight.a.provider} ${windowLabel(tight.w)} ${Math.round(tight.w.used_pct ?? 0)}%`)
+  if (local) parts.push('local edits ON')
   return parts.length ? `swarm2${env ? ` ${env}` : ''} · ${parts.join(' · ')}` : undefined
 }
 
@@ -257,7 +262,7 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
   let token = (await tokenCandidates($, configured))[0] ?? ''
   if (!token) {
     await update($, feed, f => ({ ...f, error: `No status token: run /swarm2-token s2s_… (create one at ${base}/me/status-tokens)` }))
-    $.ui.status(undefined)
+    $.ui.status(await isLocalOn($) ? statusLine(EMPTY, environmentLabel(base).name, true) : undefined)
     setSpinner($, false)
     return
   }
@@ -294,6 +299,10 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
   let next: Feed
   if (control && control.status === 200 && control.body) {
     const body = control.body as Partial<Feed>
+    // the guard's list of Swarm2 repos: every project the viewer is a member of
+    if (Array.isArray(body.projects)) {
+      try { await rememberProjects($, body.projects.map(p => p?.repo)) } catch { /* the store refused: the old list stands */ }
+    }
     next = {
       ...EMPTY, ...body, source: 'control', runs: withMergeDetail(body.runs ?? [], statusBody),
       attention: visibleAttention(body.attention ?? [], body.projects),
@@ -315,7 +324,7 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
   lastMessages = next.messages
   toastChanges($, next, statusBody !== null)
   await update($, feed, () => next)
-  $.ui.status(statusLine(next, environmentLabel(base).name))
+  $.ui.status(statusLine(next, environmentLabel(base).name, await isLocalOn($)))
   setSpinner($, anyActive(next))
 }
 
@@ -327,6 +336,8 @@ export const register: Register = (on, options) => {
     sessionOverride = false // an override is session-scoped; a persisted value from an earlier session never outranks the setting
     await $.command.register({ name: 'swarm2', description: 'Show the Swarm2 control pane' })
     await $.command.register({ name: 'swarm2-token', description: 'Save the read-only Swarm2 status token (s2s_…), or "clear"' })
+    await $.command.register({ name: 'swarm2-local', description: 'Allow (on) or block (off, the default) local edits to Swarm2 repos in this session' })
+    await initGuard($)
     void $.ui.open({ id: PANE, title: TITLE })
     void poll($, token, base)
     $.clock.every(POLL_MS, () => poll($, token, base))
@@ -350,6 +361,28 @@ export const register: Register = (on, options) => {
     return { text: 'Swarm2 status token saved; the Swarm2 pane now updates every 5 s.' }
   })
 
+  // Plan locally → swarm_plan_propose; implement only via Swarm2 runs (swarm_task_submit); review and steer.
+  // Fail open: a guard that throws or overruns lets the call run (next is replay-safe here).
+  on('tool.call', ($, e, next) => guardToolCall($, e.tool, e as unknown as Record<string, unknown>, () => next(e)))
+    .catch(($, e, next) => next(e))
+
+  on('command.run', { command: 'swarm2-local' }, async ($, e) => {
+    const cmd = parseLocalCommand(e.args)
+    if (cmd.kind === 'usage') return { text: 'Usage: /swarm2-local on | off (no argument shows the current setting)' }
+    if (cmd.kind === 'show') {
+      const allowed = await isLocalOn($)
+      return { text: allowed
+        ? `Local edits to Swarm2 repos are ON in this session${isEnvOverride() ? ' (SWARM2_LOCAL_EDITS)' : ''}. /swarm2-local off blocks them again.`
+        : 'Local edits to Swarm2 repos are OFF (the default): plan locally → swarm_plan_propose; implement only via Swarm2 runs (swarm_task_submit). /swarm2-local on allows them for this session.' }
+    }
+    await setLocal($, cmd.value)
+    $.ui.status(statusLine(await read($, feed), environmentLabel(base).name, await isLocalOn($)))
+    if (cmd.value === 'off' && isEnvOverride()) return { text: 'Local edits stay ON: SWARM2_LOCAL_EDITS is set for this session.' }
+    return { text: cmd.value === 'on'
+      ? 'Local edits to Swarm2 repos are ON for this session (recorded). /swarm2-local off blocks them again.'
+      : 'Local edits to Swarm2 repos are OFF: submit a job (swarm_task_submit) or send a plan (swarm_plan_propose) instead.' }
+  })
+
   on('command.run', { command: 'swarm2' }, async $ => {
     await $.ui.open({ id: PANE, title: TITLE })
     await poll($, token, base)
@@ -359,6 +392,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const f = await read($, feed)
+    const local = (await read($, localEdits)) || isEnvOverride()
     const spin = FRAMES[(await read($, frame)) % FRAMES.length]
     const cols = e.props.bodyColumns
     const stale = f.checkedAt !== null && Date.now() - new Date(f.checkedAt).getTime() > STALE_MS
@@ -493,6 +527,7 @@ export const register: Register = (on, options) => {
           <Text weight="bold" color={env.name === 'PROD' ? undefined : env.name === 'DEV' ? 'green' : 'yellow'}>● {env.name}</Text>
           <Text dimColor> {env.host} · plugin v{PLUGIN_VERSION}</Text>
         </Text>
+        {local && <Text color="red" weight="bold" wrap="wrap">⚠ local edits ON — writes to Swarm2 repos are allowed in this session (/swarm2-local off)</Text>}
         {f.error && <Text color="yellow" wrap="wrap">{f.error}</Text>}
 
         {heading('MY ACCOUNTS')}
