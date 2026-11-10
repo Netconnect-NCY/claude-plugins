@@ -17,28 +17,36 @@ export type LocalAuditEntry = { at: string; session: string; value: 'on' | 'off'
 // ---------------------------------------------------------------------------------------------------------------------
 // Remotes and projects
 
-/** `owner/repo`, lower-cased, from any github.com git remote URL spelling (ssh scp-like, ssh://, https with credentials,
- * git://, trailing `.git` or `/`); null for something that names no GitHub repository (another host, a local path, an
- * empty line). */
-export function normalizeRemote(url: string): string | null {
+/** Hosts that are GitHub (case-insensitive): the web/git host, its ssh-over-443 host and the www alias. */
+export const GITHUB_HOSTS: readonly string[] = ['github.com', 'www.github.com', 'ssh.github.com']
+const isGithubHost = (host: string) => GITHUB_HOSTS.includes(host.toLowerCase())
+
+type RemoteParts = { host: string; path: string; ssh: boolean }
+
+/** Host and path of a remote URL; `ssh` is true for the scp-like and ssh:// forms (the only ones an ~/.ssh/config alias can
+ * stand behind). Null for a local path, a file: URL or an empty line. */
+function splitRemote(url: string): RemoteParts | null {
   let s = url.trim()
   if (!s) return null
-  let path: string
   const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.exec(s)
   if (scheme) {
     if (/^file:/i.test(s)) return null
+    const proto = scheme[0].slice(0, -3).toLowerCase()
     s = s.slice(scheme[0].length)
     const slash = s.indexOf('/')
     if (slash < 0) return null
     const host = s.slice(0, slash).replace(/^[^@]*@/, '').replace(/:\d*$/, '')
-    if (host.toLowerCase() !== 'github.com') return null
-    path = s.slice(slash + 1)
-  } else {
-    // scp-like user@host:owner/repo; a bare local path has no colon before its first slash
-    const m = /^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/.exec(s)
-    if (!m || m[1]!.toLowerCase() !== 'github.com') return null // another host, or a Windows drive letter
-    path = m[2]!
+    if (!host) return null
+    return { host, path: s.slice(slash + 1), ssh: proto === 'ssh' || proto === 'git+ssh' || proto === 'ssh+git' }
   }
+  // scp-like user@host:owner/repo; a bare local path has no colon before its first slash
+  const m = /^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/.exec(s)
+  if (!m) return null // a local path
+  if (/^[A-Za-z]$/.test(m[1]!)) return null // a Windows drive letter
+  return { host: m[1]!, path: m[2]!, ssh: true }
+}
+
+function ownerRepo(path: string): string | null {
   const parts = path.split(/[?#]/)[0]!.replace(/\/+$/, '').replace(/\.git$/i, '').split('/').filter(Boolean)
   if (parts.length < 2) return null
   const owner = parts[parts.length - 2]!
@@ -47,16 +55,74 @@ export function normalizeRemote(url: string): string | null {
   return `${owner}/${repo}`.toLowerCase()
 }
 
-/** The distinct GitHub repositories the `origin` remote of `git remote -v` names (upstream and fork remotes do not count). */
-export function parseRemotes(output: string): string[] {
-  const out = new Set<string>()
+/** `owner/repo`, lower-cased, from any GitHub remote URL spelling (host github.com, www.github.com or ssh.github.com; ssh
+ * scp-like, ssh://, https with credentials, git://, trailing `.git` or `/`); null for something that names no GitHub
+ * repository (another host or an ssh alias — see aliasCandidate —, a local path, an empty line). Pure: no alias lookup. */
+export function normalizeRemote(url: string): string | null {
+  const r = splitRemote(url)
+  return r && isGithubHost(r.host) ? ownerRepo(r.path) : null
+}
+
+/** The host a remote URL names (as written, no user or port), or null for a local path or file: URL. */
+export function remoteHost(url: string): string | null {
+  return splitRemote(url)?.host ?? null
+}
+
+export type AliasCandidate = { url: string; host: string; path: string }
+
+/** An ssh-style remote (scp-like or ssh://) on a host that is not GitHub by name: it may be an ~/.ssh/config alias for
+ * GitHub. `path` is the lower-cased owner/repo. Null for https, git, file, local paths, GitHub hosts or an unnameable repo. */
+export function aliasCandidate(url: string): AliasCandidate | null {
+  const r = splitRemote(url)
+  if (!r || !r.ssh || isGithubHost(r.host)) return null
+  const path = ownerRepo(r.path)
+  return path ? { url: url.trim(), host: r.host, path } : null
+}
+
+/** `owner/repo` of a remote once its host is resolved (`ssh -G` hostname): only when the resolved host is GitHub. */
+export function normalizeRemoteWithHost(url: string, resolvedHostname: string): string | null {
+  const r = splitRemote(url)
+  return r && isGithubHost(resolvedHostname.trim()) ? ownerRepo(r.path) : null
+}
+
+/** The hostname of `ssh -G <host>` output (its `hostname <value>` line), or null. */
+export function parseSshHostname(stdout: string): string | null {
+  for (const line of stdout.split('\n')) {
+    const m = /^hostname\s+(\S+)\s*$/i.exec(line.trim())
+    if (m) return m[1]!
+  }
+  return null
+}
+
+/** Every distinct remote (any name, fetch and push lines) of `git remote -v` output. */
+export function remoteEntries(output: string): { name: string; url: string }[] {
+  const seen = new Set<string>()
+  const out: { name: string; url: string }[] = []
   for (const line of output.split('\n')) {
     const [name, url] = line.trim().split(/\s+/)
-    if (name !== 'origin') continue
-    const repo = url ? normalizeRemote(url) : null
-    if (repo) out.add(repo)
+    if (!name || !url) continue
+    const key = `${name}\n${url}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ name, url })
   }
-  return [...out]
+  return out
+}
+
+/** The distinct GitHub repositories any remote of `git remote -v` names (resolved GitHub hosts only; see aliasCandidates). */
+export function parseRemotes(output: string): string[] {
+  return [...new Set(remoteEntries(output).flatMap(e => { const r = normalizeRemote(e.url); return r ? [r] : [] }))]
+}
+
+/** The distinct ssh-style remotes on a non-GitHub host name that need an `ssh -G` lookup. */
+export function aliasCandidates(output: string): AliasCandidate[] {
+  const seen = new Set<string>()
+  const out: AliasCandidate[] = []
+  for (const e of remoteEntries(output)) {
+    const c = aliasCandidate(e.url)
+    if (c && !seen.has(c.url)) { seen.add(c.url); out.push(c) }
+  }
+  return out
 }
 
 /** Lower-cased `owner/name` of each project, as the feed or swarm_projects spells it. */

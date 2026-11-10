@@ -3,11 +3,11 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import {
-  appendAudit, BLOCK_MESSAGE, bashWriteTargets, envAllowsLocal, freshProjects, MAX_AUDIT, normalizeRemote, parseLocalCommand,
+  aliasCandidate, appendAudit, BLOCK_MESSAGE, bashWriteTargets, envAllowsLocal, freshProjects, MAX_AUDIT, normalizeRemote, normalizeRemoteWithHost, parseLocalCommand, remoteHost,
   parseRemotes, projectsFromResult, PROJECTS_TTL_MS, remotesMatch, toolWriteTargets,
 } from '../hooks/guard'
 import type { LocalAuditEntry } from '../hooks/guard'
-import { resetGuardMemory } from '../hooks/guard-hook'
+import { resetGuardMemory, setGuardWarn } from '../hooks/guard-hook'
 
 const ctx = { cwd: '/repo', home: '/home/u' }
 const writes = (command: string, c = ctx) => bashWriteTargets(command, c)
@@ -157,6 +157,8 @@ type Host = {
   posts?: { url: string; auth: string | undefined; body: unknown }[]
   /** the report endpoint fails (HTTP 500) or throws */
   reportFails?: 'status' | 'throw'
+  /** `ssh -G <host>` answers: a hostname, 'fail' (exit 1) or 'throw' */
+  ssh?: Record<string, string>
 }
 
 function host(over: Partial<Host> = {}): Host {
@@ -206,6 +208,12 @@ function engine(on: On, h: Host) {
   on('process.run', (_, e) => {
     h.ran.push([...e.argv])
     if (e.argv[0] === 'sh') return { value: { exitCode: 0, stdout: `/home/u\n${h.env ?? ''}`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (e.argv[0] === 'ssh') {
+      const a = h.ssh?.[e.argv[2] ?? ''] ?? 'throw'
+      if (a === 'throw') throw new Error('ssh: not found')
+      if (a === 'fail') return { value: { exitCode: 1, stdout: '', stderr: 'x', isStdoutTruncated: false, isStderrTruncated: false } }
+      return { value: { exitCode: 0, stdout: `user git\nhostname ${a}\nport 22\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     if (h.gitThrows) throw new Error('git: not found')
     const root = e.argv[2] ?? ''
     return { value: { exitCode: 0, stdout: h.remotes[root] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -321,17 +329,81 @@ test('a store that throws on read fails open', async ($, on) => {
   expect(await outcome($, { tool: 'Bash', command: 'git commit -m x' })).toBe('ran')
 })
 
-test('only the origin remote on github.com decides whether a checkout is a Swarm2 repo', async ($, on) => {
+test('any remote on a GitHub host can match; an unrelated fork under another owner does not', async ($, on) => {
   const out = 'upstream\tgit@github.com:Acme/App.git (fetch)\nfork\thttps://github.com/acme/app (fetch)\norigin\thttps://github.com/me/other (fetch)\n'
-  expect(parseRemotes(out)).toEqual(['me/other'])
+  expect(parseRemotes(out)).toEqual(['acme/app', 'me/other'])
   expect(parseRemotes('origin\thttps://gitlab.com/acme/app.git (fetch)\n')).toEqual([])
   const h = host({ remotes: { '/repo': out } })
   engine(on, h)
   await start($)
-  expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('ran')
+  expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('blocked')
   h.remotes['/repo'] = 'origin\thttps://gitlab.com/acme/app.git (fetch)\n'
   resetGuardMemory()
   expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('ran')
+  h.remotes['/repo'] = 'origin\thttps://github.com/me/app (fetch)\n'
+  resetGuardMemory()
+  expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('ran')
+})
+
+test('GitHub host spellings: ssh.github.com:443, www.github.com, scp-like', () => {
+  expect(normalizeRemote('ssh://git@ssh.github.com:443/Org/repo.git')).toBe('org/repo')
+  expect(normalizeRemote('https://www.github.com/Org/repo')).toBe('org/repo')
+  expect(normalizeRemote('git@GitHub.com:Org/repo.git')).toBe('org/repo')
+  expect(normalizeRemote('git@ssh.github.com:Org/repo.git')).toBe('org/repo')
+  expect(normalizeRemote('git@github-work:Org/repo.git')).toBe(null)
+})
+
+test('alias helpers: host, ssh-only candidates, resolved hostname', () => {
+  expect(remoteHost('git@github-work:Org/repo.git')).toBe('github-work')
+  expect(remoteHost('/srv/git/x')).toBe(null)
+  expect(aliasCandidate('git@github-work:Org/Repo.git')).toEqual({ url: 'git@github-work:Org/Repo.git', host: 'github-work', path: 'org/repo' })
+  expect(aliasCandidate('ssh://git@work/Org/repo')?.host).toBe('work')
+  for (const u of ['https://gitlab.com/Org/repo', 'git://x.test/Org/repo', 'file:///a/b/c', '/srv/a/b', 'git@github.com:Org/repo']) expect(aliasCandidate(u)).toBe(null)
+  expect(normalizeRemoteWithHost('git@github-work:Org/repo.git', 'GitHub.com')).toBe('org/repo')
+  expect(normalizeRemoteWithHost('git@github-work:Org/repo.git', 'gitlab.example')).toBe(null)
+})
+
+test('an ssh alias is resolved with ssh -G; github hostname blocks, another host does not, failures fail closed', async ($, on) => {
+  const aliasRemote = 'origin\tgit@github-work:Acme/App.git (fetch)\norigin\tgit@github-work:Acme/App.git (push)\n'
+  const edit = { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }
+  for (const [ssh, expected] of [
+    ['github.com', 'blocked'], ['ssh.github.com', 'blocked'], ['gitlab.example.org', 'ran'], ['fail', 'blocked'], ['throw', 'blocked'],
+  ] as const) {
+    const h = host({ remotes: { '/repo': aliasRemote }, ssh: { 'github-work': ssh } })
+    engine(on, h)
+    await start($)
+    expect(await outcome($, edit)).toBe(expected)
+    // cached per host: a second checkout verdict does not ask ssh again
+    const asked = () => h.ran.filter(a => a[0] === 'ssh').length
+    const n = asked()
+    resetGuardMemory()
+    expect(n).toBe(1)
+  }
+  // https remotes never trigger ssh
+  const h = host({ remotes: { '/repo': 'origin\thttps://example.test/Acme/App (fetch)\n' } })
+  engine(on, h)
+  await start($)
+  expect(await outcome($, edit)).toBe('ran')
+  expect(h.ran.some(a => a[0] === 'ssh')).toBe(false)
+})
+
+test('no matching remote but a GitHub-like one warns once per verdict window', async ($, on) => {
+  const h = host({ remotes: { '/repo': 'origin\thttps://github.com/me/other (fetch)\nalias\tgit@work:me/x.git (fetch)\n' }, ssh: { work: 'github.com' } })
+  engine(on, h)
+  const warnings: string[] = []
+  setGuardWarn(m => warnings.push(m))
+  await start($)
+  const edit = { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }
+  expect(await outcome($, edit)).toBe('ran')
+  expect(await outcome($, edit)).toBe('ran')
+  expect(warnings).toEqual(["swarm2 guard: no Swarm2 project matches this checkout's remotes (me/other, me/x); local edits are allowed"])
+  // a gitlab-only checkout is not GitHub-like: silent
+  const h2 = host({ remotes: { '/repo': 'origin\thttps://gitlab.com/acme/app (fetch)\n' } })
+  engine(on, h2)
+  setGuardWarn(m => warnings.push(m))
+  await start($)
+  expect(await outcome($, edit)).toBe('ran')
+  expect(warnings.length).toBe(1)
 })
 
 test('a /swarm2-local override is reported to Swarm2 as an audit event, best-effort', async ($, on) => {

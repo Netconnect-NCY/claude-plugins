@@ -4,7 +4,7 @@
 import type { EngineInterface, ToolCallResult } from 'claude-code'
 
 import {
-  appendAudit, BLOCK_MESSAGE, envAllowsLocal, GUARDED_TOOLS, freshProjects, isInside, normalizePath, normalizeRepos, parentDir, parseRemotes,
+  aliasCandidates, appendAudit, BLOCK_MESSAGE, envAllowsLocal, GUARDED_TOOLS, freshProjects, isInside, normalizePath, normalizeRepos, normalizeRemoteWithHost, parentDir, parseRemotes, parseSshHostname,
   projectsFromResult, remotesMatch, toolWriteTargets,
 } from './guard'
 import type { LocalAuditEntry, ProjectsCache } from './guard'
@@ -23,6 +23,14 @@ let lastWritten: { key: string; at: number } | null = null
 const REWRITE_MS = 3_600_000
 let home: string | null = null
 let envOverride = false
+// `ssh -G` answers per host alias: the hostname, or null when it could not be resolved
+const hostnames = new Map<string, string | null>()
+
+/** Where the guard's warnings go (stderr); a test swaps it. */
+export type Warn = (message: string) => void
+const defaultWarn: Warn = m => { try { process.stderr.write(`${m}\n`) } catch { /* no stderr */ } }
+let warn: Warn = defaultWarn
+export function setGuardWarn(fn: Warn | null): void { warn = fn ?? defaultWarn }
 
 /** For tests: forget the module's memory (a reload does the same). */
 export function resetGuardMemory(): void {
@@ -30,6 +38,8 @@ export function resetGuardMemory(): void {
   lastWritten = null
   home = null
   envOverride = false
+  hostnames.clear()
+  warn = defaultWarn
 }
 
 /** Saves the project list (from the control feed or swarm_projects) with the time it was seen. */
@@ -69,8 +79,24 @@ export async function checkoutRoot($: EngineInterface, path: string): Promise<st
   return null
 }
 
-/** Whether the checkout at `root` is a Swarm2 project: .swarm2/project.yaml at its root, or a git remote in the cached
- * project list. Errors answer false. */
+/** The hostname `ssh -G <host>` reports for an ssh alias, cached per host; null when it cannot be told (error, timeout,
+ * non-zero exit, no hostname line). */
+async function resolveHostname($: EngineInterface, host: string): Promise<string | null> {
+  if (hostnames.has(host)) return hostnames.get(host)!
+  let hostname: string | null = null
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(host)) {
+    try {
+      const out = await $.process.run(['ssh', '-G', host], { timeoutMs: 3000 })
+      if (out.exitCode === 0) hostname = parseSshHostname(out.stdout)
+    } catch { /* unresolved */ }
+  }
+  hostnames.set(host, hostname)
+  return hostname
+}
+
+/** Whether the checkout at `root` is a Swarm2 project: .swarm2/project.yaml at its root, or any git remote in the cached
+ * project list. An ssh alias is resolved with `ssh -G`; when that fails the remote's owner/repo path alone decides (fail
+ * closed). When no remote matches but one looks like GitHub, warns once per verdict window. Git errors answer false. */
 export async function isSwarm2Checkout($: EngineInterface, root: string): Promise<boolean> {
   const cached = verdicts.get(root)
   if (cached && Date.now() - cached.at < VERDICT_MS) return cached.registered
@@ -81,7 +107,22 @@ export async function isSwarm2Checkout($: EngineInterface, root: string): Promis
     if (projects && projects.length) {
       try {
         const out = await $.process.run(['git', '-C', root, 'remote', '-v'], { timeoutMs: 3000 })
-        if (out.exitCode === 0) registered = remotesMatch(parseRemotes(out.stdout), projects)
+        if (out.exitCode === 0) {
+          const repos = parseRemotes(out.stdout)
+          const githubLike = [...repos]
+          for (const c of aliasCandidates(out.stdout)) {
+            const resolved = await resolveHostname($, c.host)
+            if (resolved === null) { repos.push(c.path); githubLike.push(c.path) } // fail closed: it might be GitHub
+            else {
+              const r = normalizeRemoteWithHost(c.url, resolved)
+              if (r) { repos.push(r); githubLike.push(r) }
+            }
+          }
+          registered = remotesMatch(repos, projects)
+          if (!registered && githubLike.length) {
+            warn(`swarm2 guard: no Swarm2 project matches this checkout's remotes (${[...new Set(githubLike)].join(', ')}); local edits are allowed`)
+          }
+        }
       } catch { /* git unavailable: fail open */ }
     }
   }
