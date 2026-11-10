@@ -72,8 +72,12 @@ function json(body: unknown, status = 200) {
   return { value: { status, ok: status === 200, headers: {}, text: status === 200 ? JSON.stringify(body) : '' } }
 }
 
-function engine(on: On, server: Server, toasts: string[] = [], stored: string | null = 's2s_testtokentesttokentest') {
-  const store = new Map<string, unknown>(stored ? [['statusToken', stored]] : [])
+type Answerer = (url: string, authorization: string, store: Map<string, unknown>) => ReturnType<typeof json> | undefined
+
+function engine(
+  on: On, server: Server, toasts: string[] = [], stored: string | null = 's2s_testtokentesttokentest',
+  answer?: Answerer, store = new Map<string, unknown>(stored ? [['statusToken', stored]] : []),
+) {
   on('command.register', () => ({ value: { command: 'x' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
@@ -93,6 +97,8 @@ function engine(on: On, server: Server, toasts: string[] = [], stored: string | 
   })
   on('http.fetch', (_, e) => {
     server.calls?.push({ url: e.url, authorization: (e.init?.headers as Record<string, string> | undefined)?.authorization })
+    const custom = answer?.(e.url, String((e.init?.headers as Record<string, string> | undefined)?.authorization), store)
+    if (custom) return custom
     if (e.url.endsWith('/me/control')) return server.control ? json(server.control) : json(null, 403)
     if (e.url.endsWith('/me/runs/status')) return json(server.status)
     return json(null, 404)
@@ -361,7 +367,7 @@ test('the userConfig status token is used against the prod URL by default', { op
   for (const c of server.calls!) expect(c.authorization).toBe('Bearer s2s_configuredconfiguredtoken')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /● PROD/ })) ? 'found' : 'missing ● PROD').toBe('found')
-  expect((await ui.find({ type: 'Text', text: /plugin v0\.3\.0/ })) ? 'found' : 'missing plugin version').toBe('found')
+  expect((await ui.find({ type: 'Text', text: /plugin v0\.3\.3/ })) ? 'found' : 'missing plugin version').toBe('found')
   await ui.unmount()
 })
 
@@ -424,5 +430,120 @@ test('external observations render and toast through control and legacy status f
   server.status = { runs: [], deployments: [deployment(observation)], messages: [] }
   await command($, 'swarm2')
   await has(ui, /external · observing · merged abcdef12/)
+  await ui.unmount()
+})
+
+// ---- status token: precedence, 401 recovery ----
+const EMPTY_STATUS = { runs: [], deployments: [], messages: [] }
+const bearers = (calls: Server['calls']) => calls!.map(c => String(c.authorization))
+
+test('401, then the token is rotated in the store: one retry with the new token, the pane shows data', async ($, on) => {
+  const OLD = 's2s_oldoldoldoldoldoldold'
+  const NEW = 's2s_newnewnewnewnewnewnew'
+  const calls: NonNullable<Server['calls']> = []
+  // the server rejects the old token; a rotation (as another session's /swarm2-token would do) lands in the store mid-poll
+  engine(on, { control: CONTROL, status: EMPTY_STATUS, calls }, [], OLD, (_, auth, store) => {
+    if (auth !== `Bearer ${OLD}`) return undefined
+    store.set('statusToken', NEW)
+    return json(null, 401)
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  // clock.every is a no-op here, so the only poll so far is the session's own: a NEW-token request proves the in-poll retry
+  for (let i = 0; i < 50 && !bearers(calls).includes(`Bearer ${NEW}`); i++) await new Promise(r => (globalThis as unknown as { setTimeout: (f: (v?: unknown) => void, ms: number) => unknown }).setTimeout(r, 20))
+  expect(bearers(calls)).toContain(`Bearer ${NEW}`)
+  await command($, 'swarm2')
+  calls.length = 0
+  await command($, 'swarm2') // settled: the stored token is now the new one
+  expect(bearers(calls).length).toBe(2)
+  expect(bearers(calls).every(b => b === `Bearer ${NEW}`)).toBe(true)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /ACCOUNTS/)
+  expect(await ui.find({ type: 'Text', text: /rejected|HTTP 401/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('401 with an unchanged token: no retry, a clear message with the link, never the token', async ($, on) => {
+  const TOKEN = 's2s_rejectedrejectedrejected'
+  const server: Server = { control: CONTROL, status: EMPTY_STATUS, calls: [] }
+  const toasts: string[] = []
+  engine(on, server, toasts, TOKEN, () => json(null, 401))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2') // let the session's own poll settle
+  const before = server.calls!.length
+  await command($, 'swarm2')
+  const made = server.calls!.slice(before)
+  expect(made.length).toBe(2) // one control + one status request, no retry
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /status token rejected/)
+  await has(ui, /https:\/\/swarm2-mcp\.netconnect\.ro\/me\/status-tokens/)
+  expect(await ui.find({ type: 'Text', text: new RegExp(TOKEN) })).toBeUndefined()
+  expect(toasts.join('\n')).not.toContain(TOKEN)
+  await ui.unmount()
+})
+
+test('/swarm2-token overrides a stale configured option, and clear falls back to it', { options: { statusToken: 's2s_staleconfiguredstaleconfigured' } }, async ($, on) => {
+  const server: Server = { control: CONTROL, status: EMPTY_STATUS, calls: [] }
+  engine(on, server, [], null)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  expect(bearers(server.calls).every(b => b === 'Bearer s2s_staleconfiguredstaleconfigured')).toBe(true)
+  server.calls!.length = 0
+  await command($, 'swarm2-token', 's2s_freshsavedfreshsavedfresh')
+  expect(bearers(server.calls).length).toBeGreaterThan(0)
+  expect(bearers(server.calls).every(b => b === 'Bearer s2s_freshsavedfreshsavedfresh')).toBe(true)
+  server.calls!.length = 0
+  expect((await command($, 'swarm2-token', 'clear')).text).toContain('removed')
+  expect(bearers(server.calls).length).toBeGreaterThan(0)
+  expect(bearers(server.calls).every(b => b === 'Bearer s2s_staleconfiguredstaleconfigured')).toBe(true)
+})
+
+test('a stale stored token from an earlier session never shadows a valid configured setting', { options: { statusToken: 's2s_validconfiguredvalidconfigured' } }, async ($, on) => {
+  const STALE = 's2s_stalestoredstalestoredstale'
+  const server: Server = { control: CONTROL, status: EMPTY_STATUS, calls: [] }
+  engine(on, server, [], STALE, (_, auth) => auth === `Bearer ${STALE}` ? json(null, 401) : undefined)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  expect(bearers(server.calls).every(b => b === 'Bearer s2s_validconfiguredvalidconfigured')).toBe(true)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /ACCOUNTS/)
+  expect(await ui.find({ type: 'Text', text: /rejected/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a token saved in this session is tried first; when rejected, the configured setting is tried once', { options: { statusToken: 's2s_validconfiguredvalidconfigured' } }, async ($, on) => {
+  const BAD = 's2s_badsavedbadsavedbadsaved'
+  const server: Server = { control: CONTROL, status: EMPTY_STATUS, calls: [] }
+  engine(on, server, [], null, (_, auth) => auth === `Bearer ${BAD}` ? json(null, 401) : undefined)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  server.calls!.length = 0
+  await command($, 'swarm2-token', BAD)
+  const used = bearers(server.calls)
+  expect(used[0]).toBe(`Bearer ${BAD}`)
+  expect(used).toContain('Bearer s2s_validconfiguredvalidconfigured')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /rejected/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('every candidate rejected: the message points at /swarm2-token clear', { options: { statusToken: 's2s_rejectedconfiguredrejected' } }, async ($, on) => {
+  const server: Server = { control: CONTROL, status: EMPTY_STATUS, calls: [] }
+  engine(on, server, [], 's2s_rejectedstoredrejectedstored', () => json(null, 401))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /status token rejected/)
+  await has(ui, /swarm2-token clear/)
+  await ui.unmount()
+})
+
+test('a 401 on the control feed alone keeps the status-feed render', async ($, on) => {
+  const server: Server = { control: CONTROL, status: EMPTY_STATUS, calls: [] }
+  engine(on, server, [], 's2s_testtokentesttokentest', (url) => url.endsWith('/me/control') ? json(null, 401) : undefined)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /status token rejected/ })).toBeUndefined()
+  await has(ui, /control feed answered HTTP 401/)
   await ui.unmount()
 })

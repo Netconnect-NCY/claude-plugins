@@ -9,7 +9,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.3.2'
+export const PLUGIN_VERSION = '0.3.3'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -237,9 +237,24 @@ async function fail($: EngineInterface, error: string): Promise<void> {
   await update($, feed, f => ({ ...f, error, checkedAt: new Date().toISOString() }))
 }
 
+/** Set when /swarm2-token saved a value in THIS session: only then does the stored token outrank the configured option. */
+let sessionOverride = false
+
+/**
+ * Token candidates in order, distinct and non-empty. The configured option comes first, so a freshly fixed setting is
+ * never shadowed by a stale value persisted by an earlier session; a value saved with /swarm2-token in this session is a
+ * deliberate override and comes first. The store is re-read every time (another session may have rotated it).
+ */
+async function tokenCandidates($: EngineInterface, configured: string): Promise<string[]> {
+  let stored = ''
+  try { stored = String((await $.store.get('statusToken')) ?? '').trim() } catch { /* no store value */ }
+  const ordered = sessionOverride ? [stored, configured] : [configured, stored]
+  return [...new Set(ordered.filter(Boolean))]
+}
+
 async function poll($: EngineInterface, configured: string, base: string): Promise<void> {
   // /config does not show secret fields, so the token is normally saved with /swarm2-token (the mod's local store)
-  const token = configured || String((await $.store.get('statusToken')) ?? '')
+  let token = (await tokenCandidates($, configured))[0] ?? ''
   if (!token) {
     await update($, feed, f => ({ ...f, error: `No status token: run /swarm2-token s2s_… (create one at ${base}/me/status-tokens)` }))
     $.ui.status(undefined)
@@ -248,10 +263,30 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
   }
   const askControl = Date.now() - controlMissingAt > CONTROL_RETRY_MS
   // The status feed is always read: it alone carries the project messages and each run's merge reason and SHA.
-  const [control, status] = await Promise.all([
+  let [control, status] = await Promise.all([
     askControl ? fetchJson($, `${base}/me/control`, token) : Promise.resolve(null),
     fetchJson($, `${base}/me/runs/status`, token),
   ])
+  if (status.status === 401) {
+    // Try every other candidate once (configured option, stored value — re-read, it may have been rotated).
+    const tried = new Set([token])
+    for (const candidate of await tokenCandidates($, configured)) {
+      if (tried.has(candidate)) continue
+      tried.add(candidate)
+      token = candidate
+      ;[control, status] = await Promise.all([
+        askControl ? fetchJson($, `${base}/me/control`, token) : Promise.resolve(null),
+        fetchJson($, `${base}/me/runs/status`, token),
+      ])
+      if (status.status !== 401) break
+    }
+    if (status.status === 401) {
+      await fail($, `status token rejected — create a new one at ${base}/me/status-tokens and run /swarm2-token s2s_…, or /swarm2-token clear to use the configured setting`)
+      $.ui.status(undefined)
+      setSpinner($, false)
+      return
+    }
+  }
   // before the control feed shipped the route is absent: 404, or 403 because a status token reaches only the feed paths
   if (control && (control.status === 404 || control.status === 403)) controlMissingAt = Date.now()
   const statusBody = status.status === 200 && status.body ? (status.body as StatusBody) : null
@@ -269,7 +304,7 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
     const controlFailed = control && control.status !== 404 && control.status !== 403
     next = {
       ...EMPTY, ...fromStatus(statusBody), messages: Array.isArray(statusBody.messages) ? statusBody.messages : [], source: 'status',
-      error: controlFailed ? `Swarm2 control feed ${control.status ? `answered HTTP ${control.status}` : 'unreachable'}` : null,
+      error: controlFailed ? `Swarm2 control feed ${control?.status ? `answered HTTP ${control?.status}` : 'unreachable'}` : null,
       checkedAt,
     }
   } else {
@@ -289,6 +324,7 @@ export const register: Register = (on, options) => {
   const base = String(options.baseUrl || DEFAULT_BASE).replace(/\/+$/, '')
 
   on('session.start', async ($, e, next) => {
+    sessionOverride = false // an override is session-scoped; a persisted value from an earlier session never outranks the setting
     await $.command.register({ name: 'swarm2', description: 'Show the Swarm2 control pane' })
     await $.command.register({ name: 'swarm2-token', description: 'Save the read-only Swarm2 status token (s2s_…), or "clear"' })
     void $.ui.open({ id: PANE, title: TITLE })
@@ -301,6 +337,7 @@ export const register: Register = (on, options) => {
     const value = e.args.trim()
     if (value === 'clear') {
       await $.store.delete('statusToken')
+      sessionOverride = false
       await poll($, token, base)
       return { text: 'Swarm2 status token removed.' }
     }
@@ -308,6 +345,7 @@ export const register: Register = (on, options) => {
       return { text: `Usage: /swarm2-token s2s_… (create a read-only token at ${base}/me/status-tokens), or /swarm2-token clear` }
     }
     await $.store.set('statusToken', value)
+    sessionOverride = true
     await poll($, token, base)
     return { text: 'Swarm2 status token saved; the Swarm2 pane now updates every 5 s.' }
   })

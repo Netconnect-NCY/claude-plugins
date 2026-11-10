@@ -15,7 +15,7 @@ Run these commands in Claude Code:
 /plugin install swarm2@netconnect
 ```
 
-Plugin **0.3.2** targets `https://swarm2-mcp.netconnect.ro`, the only deployed environment. Service dev was decommissioned on 2026-11-08. Its `baseUrl` setting supplies `${user_config.baseUrl}/mcp` and the pane URL. Target repositories still support dev/prod deployment APIs.
+Plugin **0.3.3** targets `https://swarm2-mcp.netconnect.ro`, the only deployed environment. Service dev was decommissioned on 2026-11-08. Its `baseUrl` setting supplies `${user_config.baseUrl}/mcp` and the pane URL. Target repositories still support dev/prod deployment APIs.
 
 If the marketplace is unavailable, add the MCP server manually instead:
 
@@ -30,6 +30,8 @@ That fallback connects the server only; the plugin supplies the pane and bundled
 1. **Authenticate the Swarm2 server:** open `/mcp` → `swarm2` (shown as `plugin:swarm2:swarm2` for a plugin connection) → **Authenticate**, then complete NetConnect Keycloak SSO. This MCP login is separate from credentials for remote workers.
 2. **Store provider credentials:** ask the agent for `swarm_credentials_link` or `swarm_credentials_login_start({provider:"codex",scope:"me"})`, then open its one-time browser intake link (not provider OAuth) to store your AI-provider and GitHub credentials. Keep secrets out of chat.
 3. **Optional: light up the control pane.** Create a read-only status token at `https://swarm2-mcp.netconnect.ro/me/status-tokens`, then run `/swarm2-token s2s_…` or set the plugin's sensitive optional `statusToken` setting. Use the same service as `baseUrl`. The status token authenticates the pane, not MCP.
+
+**Token precedence and 401 recovery.** A token saved with `/swarm2-token` (kept in the plugin store) wins over the configured `statusToken` setting; `/swarm2-token clear` removes it so the setting applies again. The setting is read once when the plugin starts. On an HTTP 401 the pane re-reads the store and retries once, only if the token changed; otherwise it shows "status token rejected" with the `/me/status-tokens` link. Create a new token and run `/swarm2-token s2s_…`, with no restart needed. The token is never logged or displayed.
 
 The MCP server sends initialize `instructions` directing clients through `swarm_capabilities` → `swarm_projects` → `swarm_open_project`. Choose an authorized project returned by the server, then follow the [bundled skill](skills/working-with-swarm2/SKILL.md).
 
