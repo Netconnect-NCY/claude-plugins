@@ -16,7 +16,7 @@ Run these commands in Claude Code:
 /plugin install swarm2@netconnect
 ```
 
-Plugin **0.4.0** targets `https://swarm2-mcp.netconnect.ro`, the only deployed environment. Service dev was decommissioned on 2026-11-08. Its `baseUrl` setting supplies `${user_config.baseUrl}/mcp` and the pane URL. Target repositories still support dev/prod deployment APIs.
+Plugin **0.4.1** targets `https://swarm2-mcp.netconnect.ro`, the only deployed environment. Service dev was decommissioned on 2026-11-08. Its `baseUrl` setting supplies `${user_config.baseUrl}/mcp` and the pane URL. Target repositories still support dev/prod deployment APIs.
 
 If the marketplace is unavailable, add the MCP server manually instead:
 
