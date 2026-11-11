@@ -96,6 +96,8 @@ function engine(
     return { value: undefined }
   })
   on('http.fetch', (_, e) => {
+    // the plugin report (plan_only client gate) runs in the background; pane tests count only the feed requests
+    if (e.url.endsWith('/me/plugin/report')) return json({ ok: true })
     server.calls?.push({ url: e.url, authorization: (e.init?.headers as Record<string, string> | undefined)?.authorization })
     const custom = answer?.(e.url, String((e.init?.headers as Record<string, string> | undefined)?.authorization), store)
     if (custom) return custom
@@ -367,7 +369,7 @@ test('the userConfig status token is used against the prod URL by default', { op
   for (const c of server.calls!) expect(c.authorization).toBe('Bearer s2s_configuredconfiguredtoken')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /● PROD/ })) ? 'found' : 'missing ● PROD').toBe('found')
-  expect((await ui.find({ type: 'Text', text: /plugin v0\.5\.0/ })) ? 'found' : 'missing plugin version').toBe('found')
+  expect((await ui.find({ type: 'Text', text: /plugin v0\.5\.1/ })) ? 'found' : 'missing plugin version').toBe('found')
   await ui.unmount()
 })
 

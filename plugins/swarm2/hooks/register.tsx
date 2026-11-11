@@ -1,8 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { parseLocalCommand, PLAN_ONLY_REFUSED_MESSAGE } from './guard'
-import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, setLocal, setOverrideReporter } from './guard-hook'
+import { parseLocalCommand, PLAN_ONLY_REFUSED_MESSAGE, PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE } from './guard'
+import { configureConnection, setSessionOverride, tokenCandidates } from './connection'
+import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, reportGuard, setLocal } from './guard-hook'
+import { setPluginVersion } from './plugin-report'
 import { parseRouting, routingLine } from './routing'
 import type { Account, Attention, Deployment, Feed, Message, ProjectRow, Run, UsageWindow } from '../types'
 import {
@@ -11,7 +13,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.5.0'
+export const PLUGIN_VERSION = '0.5.1'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -22,7 +24,6 @@ export function environmentLabel(base: string): { name: string; host: string } {
 }
 const PANE = 'swarm2'
 const TITLE = 'Swarm2'
-const DEFAULT_BASE = 'https://swarm2-mcp.netconnect.ro'
 const POLL_MS = 5000
 const SPIN_MS = 120
 const STALE_MS = 30_000
@@ -242,21 +243,6 @@ async function fail($: EngineInterface, error: string): Promise<void> {
   await update($, feed, f => ({ ...f, error, checkedAt: new Date().toISOString() }))
 }
 
-/** Set when /swarm2-token saved a value in THIS session: only then does the stored token outrank the configured option. */
-let sessionOverride = false
-
-/**
- * Token candidates in order, distinct and non-empty. The configured option comes first, so a freshly fixed setting is
- * never shadowed by a stale value persisted by an earlier session; a value saved with /swarm2-token in this session is a
- * deliberate override and comes first. The store is re-read every time (another session may have rotated it).
- */
-async function tokenCandidates($: EngineInterface, configured: string): Promise<string[]> {
-  let stored = ''
-  try { stored = String((await $.store.get('statusToken')) ?? '').trim() } catch { /* no store value */ }
-  const ordered = sessionOverride ? [stored, configured] : [configured, stored]
-  return [...new Set(ordered.filter(Boolean))]
-}
-
 async function poll($: EngineInterface, configured: string, base: string): Promise<void> {
   // /config does not show secret fields, so the token is normally saved with /swarm2-token (the mod's local store)
   let token = (await tokenCandidates($, configured))[0] ?? ''
@@ -266,6 +252,8 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
     setSpinner($, false)
     return
   }
+  // the plugin report (version, guard on/off) for the server's plan_only client gate: throttled, in the background
+  void reportGuard($)
   const askControl = Date.now() - controlMissingAt > CONTROL_RETRY_MS
   // The status feed is always read: it alone carries the project messages and each run's merge reason and SHA.
   let [control, status] = await Promise.all([
@@ -329,19 +317,12 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
 }
 
 export const register: Register = (on, options) => {
-  const token = typeof options.statusToken === 'string' ? options.statusToken.trim() : ''
-  const base = String(options.baseUrl || DEFAULT_BASE).replace(/\/+$/, '')
-
-  setOverrideReporter(async ($, entry) => {
-    const t = (await tokenCandidates($, token))[0]
-    if (!t) return
-    await $.http.fetch(`${base}/me/guard/override`, {
-      method: 'POST', headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' }, body: JSON.stringify(entry),
-    })
-  })
+  // the base URL and configured token, shared with the guard's override report and the plugin report (connection.ts)
+  const { base, token } = configureConnection(options)
+  setPluginVersion(PLUGIN_VERSION)
 
   on('session.start', async ($, e, next) => {
-    sessionOverride = false // an override is session-scoped; a persisted value from an earlier session never outranks the setting
+    setSessionOverride(false) // an override is session-scoped; a persisted value from an earlier session never outranks the setting
     await $.command.register({ name: 'swarm2', description: 'Show the Swarm2 control pane' })
     await $.command.register({ name: 'swarm2-token', description: 'Save the read-only Swarm2 status token (s2s_…), or "clear"' })
     await $.command.register({ name: 'swarm2-local', description: 'Allow (on) or block (off, the default) local edits to Swarm2 repos in this session' })
@@ -356,7 +337,7 @@ export const register: Register = (on, options) => {
     const value = e.args.trim()
     if (value === 'clear') {
       await $.store.delete('statusToken')
-      sessionOverride = false
+      setSessionOverride(false)
       await poll($, token, base)
       return { text: 'Swarm2 status token removed.' }
     }
@@ -364,7 +345,7 @@ export const register: Register = (on, options) => {
       return { text: `Usage: /swarm2-token s2s_… (create a read-only token at ${base}/me/status-tokens), or /swarm2-token clear` }
     }
     await $.store.set('statusToken', value)
-    sessionOverride = true
+    setSessionOverride(true)
     await poll($, token, base)
     return { text: 'Swarm2 status token saved; the Swarm2 pane now updates every 5 s.' }
   })
@@ -385,6 +366,7 @@ export const register: Register = (on, options) => {
     }
     const result = await setLocal($, cmd.value)
     if (result === 'refused') return { text: PLAN_ONLY_REFUSED_MESSAGE }
+    if (result === 'refused_unknown') return { text: PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE }
     $.ui.status(statusLine(await read($, feed), environmentLabel(base).name, await isLocalOn($)))
     if (cmd.value === 'off' && isEnvOverride()) return { text: 'Local edits stay ON: SWARM2_LOCAL_EDITS is set for this session.' }
     return { text: cmd.value === 'on'

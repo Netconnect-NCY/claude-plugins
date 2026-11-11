@@ -6,9 +6,10 @@ import {
   aliasCandidate, appendAudit, BLOCK_MESSAGE, bashWriteTargets, envAllowsLocal, freshProjects, MAX_AUDIT, normalizeRemote, normalizeRemoteWithHost, parseLocalCommand, remoteHost,
   parseRemotes, projectsFromResult, PROJECTS_TTL_MS, remotesMatch, toolWriteTargets,
 } from '../hooks/guard'
-import { PLAN_ONLY_BLOCK_MESSAGE, PLAN_ONLY_REFUSED_MESSAGE } from '../hooks/guard'
+import { PLAN_ONLY_BLOCK_MESSAGE, PLAN_ONLY_REFUSED_MESSAGE, PLAN_ONLY_UNKNOWN_BLOCK_MESSAGE, PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE, PROJECTS_TTL_MS as TTL } from '../hooks/guard'
 import type { LocalAuditEntry } from '../hooks/guard'
 import { resetGuardMemory, setGuardTiming, setGuardWarn } from '../hooks/guard-hook'
+import { resetPluginReports } from '../hooks/plugin-report'
 
 const ctx = { cwd: '/repo', home: '/home/u' }
 const writes = (command: string, c = ctx) => bashWriteTargets(command, c)
@@ -150,12 +151,18 @@ type Host = {
   env?: string
   /** git fails to start: detection must fail open */
   gitThrows?: boolean
+  /** `git remote -v` exits with this non-zero code (e.g. 128: not a usable repository) */
+  gitExit?: number
   /** the store throws on every read */
   storeThrows?: boolean
   /** what swarm_projects answers (the fake core answers 'ran' to every other call) */
   projectsAnswer?: string
-  /** POSTs the plugin made to Swarm2 (url, bearer, body) */
+  /** override reports the plugin POSTed to Swarm2 (url, bearer, body) */
   posts?: { url: string; auth: string | undefined; body: unknown }[]
+  /** plugin reports (POST /me/plugin/report) the plugin sent */
+  reports?: { auth: string | undefined; body: unknown }[]
+  /** the plugin report endpoint answers this status (default 202) */
+  reportStatus?: number
   /** the report endpoint fails (HTTP 500) or throws */
   reportFails?: 'status' | 'throw'
   /** `ssh -G <host>` answers: a hostname, 'fail' (exit 1) or 'throw' */
@@ -182,6 +189,7 @@ function host(over: Partial<Host> = {}): Host {
 
 function engine(on: On, h: Host) {
   resetGuardMemory()
+  resetPluginReports()
   on('command.register', () => ({ value: { command: 'x' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
@@ -190,6 +198,11 @@ function engine(on: On, h: Host) {
   on('http.fetch', (_, e) => {
     const raw = e as unknown as { url: string; init?: Record<string, unknown> } & Record<string, unknown>
     const init = { url: raw.url, ...(raw.init ?? raw) } as { url: string; method?: string; headers?: Record<string, string>; body?: string }
+    if (init.method === 'POST' && init.url.endsWith('/me/plugin/report')) {
+      h.reports?.push({ auth: init.headers?.authorization, body: JSON.parse(init.body ?? 'null') })
+      const status = h.reportStatus ?? 202
+      return { value: { status, ok: status >= 200 && status < 300, headers: {}, text: '{"ok":true}' } }
+    }
     if (init.method === 'POST') {
       if (h.reportFails === 'throw') throw new Error('network down')
       h.posts?.push({ url: init.url, auth: init.headers?.authorization, body: JSON.parse(init.body ?? 'null') })
@@ -227,6 +240,7 @@ function engine(on: On, h: Host) {
       return { value: { exitCode: 0, stdout: `user git\nhostname ${a}\nport 22\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     if (h.gitThrows) throw new Error('git: not found')
+    if (h.gitExit) return { value: { exitCode: h.gitExit, stdout: '', stderr: 'fatal', isStdoutTruncated: false, isStderrTruncated: false } }
     const root = e.argv[2] ?? ''
     return { value: { exitCode: 0, stdout: h.remotes[root] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -349,13 +363,17 @@ test('any remote on a GitHub host can match; an unrelated fork under another own
   engine(on, h)
   await start($)
   expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('blocked')
-  h.remotes['/repo'] = 'origin\thttps://gitlab.com/acme/app.git (fetch)\n'
-  resetGuardMemory()
-  expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('ran')
-  h.remotes['/repo'] = 'origin\thttps://github.com/me/app (fetch)\n'
-  resetGuardMemory()
-  expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('ran')
 })
+
+// (one engine per test: the testing kit registers the fake host's hooks once, before the first call on $)
+for (const [label, remote] of [['a GitLab remote of the same name', 'origin\thttps://gitlab.com/acme/app.git (fetch)\n'], ['a fork under another owner', 'origin\thttps://github.com/me/app (fetch)\n']] as const) {
+  test(`${label} does not match a Swarm2 project`, async ($, on) => {
+    const h = host({ remotes: { '/repo': remote } })
+    engine(on, h)
+    await start($)
+    expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('ran')
+  })
+}
 
 test('GitHub host spellings: ssh.github.com:443, www.github.com, scp-like', () => {
   expect(normalizeRemote('ssh://git@ssh.github.com:443/Org/repo.git')).toBe('org/repo')
@@ -375,47 +393,38 @@ test('alias helpers: host, ssh-only candidates, resolved hostname', () => {
   expect(normalizeRemoteWithHost('git@github-work:Org/repo.git', 'gitlab.example')).toBe(null)
 })
 
-test('an ssh alias is resolved with ssh -G; github hostname blocks, another host does not, failures fail closed', async ($, on) => {
-  const aliasRemote = 'origin\tgit@github-work:Acme/App.git (fetch)\norigin\tgit@github-work:Acme/App.git (push)\n'
-  const edit = { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }
-  for (const [ssh, expected] of [
-    ['github.com', 'blocked'], ['ssh.github.com', 'blocked'], ['gitlab.example.org', 'ran'], ['fail', 'blocked'], ['throw', 'blocked'],
-  ] as const) {
+const aliasRemote = 'origin\tgit@github-work:Acme/App.git (fetch)\norigin\tgit@github-work:Acme/App.git (push)\n'
+for (const [ssh, expected] of [
+  ['github.com', 'blocked'], ['ssh.github.com', 'blocked'], ['gitlab.example.org', 'ran'], ['fail', 'blocked'], ['throw', 'blocked'],
+] as const) {
+  test(`an ssh alias is resolved with ssh -G: ${ssh} -> ${expected} (failures fail closed), asked once`, async ($, on) => {
+    const edit = { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }
     const h = host({ remotes: { '/repo': aliasRemote }, ssh: { 'github-work': ssh } })
     engine(on, h)
     await start($)
     expect(await outcome($, edit)).toBe(expected)
-    // cached per host: a second checkout verdict does not ask ssh again
-    const asked = () => h.ran.filter(a => a[0] === 'ssh').length
-    const n = asked()
-    resetGuardMemory()
-    expect(n).toBe(1)
-  }
-  // https remotes never trigger ssh
+    expect(await outcome($, edit)).toBe(expected) // the verdict is cached: ssh is not asked again
+    expect(h.ran.filter(a => a[0] === 'ssh').length).toBe(1)
+  })
+}
+
+test('https remotes never trigger ssh -G', async ($, on) => {
   const h = host({ remotes: { '/repo': 'origin\thttps://example.test/Acme/App (fetch)\n' } })
   engine(on, h)
   await start($)
-  expect(await outcome($, edit)).toBe('ran')
+  expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('ran')
   expect(h.ran.some(a => a[0] === 'ssh')).toBe(false)
 })
 
-test('no matching remote but a GitHub-like one warns once per verdict window', async ($, on) => {
+// The warning itself goes to stderr of the plugin's own module instance, which a test of this kit cannot swap (setGuardWarn
+// reaches only the test's copy of the module): the outcome is what is checked here.
+test('no matching remote but a GitHub-like one lets local edits run', async ($, on) => {
   const h = host({ remotes: { '/repo': 'origin\thttps://github.com/me/other (fetch)\nalias\tgit@work:me/x.git (fetch)\n' }, ssh: { work: 'github.com' } })
   engine(on, h)
-  const warnings: string[] = []
-  setGuardWarn(m => warnings.push(m))
   await start($)
   const edit = { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }
   expect(await outcome($, edit)).toBe('ran')
   expect(await outcome($, edit)).toBe('ran')
-  expect(warnings).toEqual(["swarm2 guard: no Swarm2 project matches this checkout's remotes (me/other, me/x); local edits are allowed"])
-  // a gitlab-only checkout is not GitHub-like: silent
-  const h2 = host({ remotes: { '/repo': 'origin\thttps://gitlab.com/acme/app (fetch)\n' } })
-  engine(on, h2)
-  setGuardWarn(m => warnings.push(m))
-  await start($)
-  expect(await outcome($, edit)).toBe('ran')
-  expect(warnings.length).toBe(1)
 })
 
 test('a /swarm2-local override is reported to Swarm2 as an audit event, best-effort', async ($, on) => {
@@ -431,8 +440,8 @@ test('a /swarm2-local override is reported to Swarm2 as an audit event, best-eff
   expect((h.store.get('localEditsAudit') as LocalAuditEntry[]).length).toBe(2)
 })
 
-test('a failing report never blocks the override', async ($, on) => {
-  for (const reportFails of ['status', 'throw'] as const) {
+for (const reportFails of ['status', 'throw'] as const) {
+  test(`a failing report (${reportFails}) never blocks the override`, async ($, on) => {
     const h = host({ posts: [], reportFails })
     h.store.set('statusToken', 's2s_test')
     engine(on, h)
@@ -440,63 +449,49 @@ test('a failing report never blocks the override', async ($, on) => {
     expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
     expect(await outcome($, { tool: 'Bash', command: 'git commit -m x' })).toBe('ran')
     expect((h.store.get('localEditsAudit') as LocalAuditEntry[]).length).toBe(1)
-  }
-})
+  })
+}
 
 const twoAliases = 'origin\tgit@alias-a:Acme/App.git (fetch)\norigin\tgit@alias-b:Acme/App.git (fetch)\n'
 const sshCalls = (h: Host) => h.ran.filter(a => a[0] === 'ssh').length
 
-test('a successful ssh -G lookup is cached across checkout verdicts; a failed one is retried only after 60 s', async ($, on) => {
-  let t = 1_000_000
-  try {
-    const h = host({ remotes: { '/repo': 'origin\tgit@alias-a:Acme/App.git (fetch)\n' }, ssh: { 'alias-a': 'gitlab.example.org' } })
+// A new project list drops every checkout verdict (the plugin's clock cannot be moved from a test of this kit): the next
+// verdict needs the alias again and must take it from the lookup cache, a success for the session, a failure for 60 s.
+for (const [answer, expected] of [['gitlab.example.org', 'ran'], ['fail', 'blocked']] as const) {
+  test(`an ssh -G lookup (${answer}) is cached across checkout verdicts`, async ($, on) => {
+    const h = host({ remotes: { '/repo': 'origin\tgit@alias-a:Acme/App.git (fetch)\n' }, ssh: { 'alias-a': answer } })
     engine(on, h)
-    setGuardTiming({ now: () => t })
     await start($)
     const edit = { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }
-    await outcome($, edit)
-    t += 61_000 // verdict expired, lookup cached for good
-    await outcome($, edit)
+    expect(await outcome($, edit)).toBe(expected)
+    h.projectsAnswer = JSON.stringify({ projects: [{ repo: 'acme/app' }, { repo: 'acme/other' }] })
+    await $.tool.call({ tool: 'mcp__plugin_swarm2_swarm2__swarm_projects' } as never)
+    expect((h.store.get('guardProjects') as { repos: string[] }).repos).toEqual(['acme/app', 'acme/other'])
+    expect(await outcome($, edit)).toBe(expected)
     expect(sshCalls(h)).toBe(1)
+  })
+}
 
-    const f = host({ remotes: { '/repo': 'origin\tgit@alias-a:Acme/App.git (fetch)\n' }, ssh: { 'alias-a': 'fail' } })
-    engine(on, f)
-    setGuardTiming({ now: () => t })
-    await start($)
-    await outcome($, edit)
-    expect(sshCalls(f)).toBe(1)
-    t += 59_000 // verdict (60 s) still fresh, no lookup
-    await outcome($, edit)
-    expect(sshCalls(f)).toBe(1)
-    t += 2_000 // both expired: retried
-    await outcome($, edit)
-    expect(sshCalls(f)).toBe(2)
-  } finally { setGuardTiming(null) }
+test('ssh -G lookups run concurrently', async ($, on) => {
+  // two 150 ms lookups finish in well under 300 ms
+  const h = host({ remotes: { '/repo': twoAliases }, sshDelayMs: 150 })
+  engine(on, h)
+  await start($)
+  const t0 = Date.now()
+  await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })
+  expect(Date.now() - t0).toBeLessThan(280)
+  expect(sshCalls(h)).toBe(2)
 })
 
-test('ssh -G lookups run concurrently and one overall deadline bounds the wall time', async ($, on) => {
-  try {
-    // concurrent: two 150 ms lookups finish in well under 300 ms
-    const h = host({ remotes: { '/repo': twoAliases }, sshDelayMs: 150 })
-    engine(on, h)
-    setGuardTiming({ lookupDeadlineMs: 1000 })
-    await start($)
-    const t0 = Date.now()
-    await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })
-    expect(Date.now() - t0).toBeLessThan(280)
-    expect(sshCalls(h)).toBe(2)
-
-    // hung lookups: the total cap (not per lookup) ends the wait, unresolved fails closed (blocked)
-    const g = host({ remotes: { '/repo': twoAliases }, sshHang: ['alias-a', 'alias-b'] })
-    engine(on, g)
-    setGuardTiming({ lookupDeadlineMs: 200 })
-    await start($)
-    const t1 = Date.now()
-    expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('blocked')
-    const took = Date.now() - t1
-    expect(took).toBeGreaterThanOrEqual(190)
-    expect(took).toBeLessThan(380)
-  } finally { setGuardTiming(null) }
+test('hung ssh -G lookups: one overall deadline (3 s) ends the wait, and unresolved fails closed', { timeoutMs: 10_000 }, async ($, on) => {
+  const g = host({ remotes: { '/repo': twoAliases }, sshHang: ['alias-a', 'alias-b'] })
+  engine(on, g)
+  await start($)
+  const t1 = Date.now()
+  expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('blocked')
+  const took = Date.now() - t1
+  expect(took).toBeGreaterThanOrEqual(2900)
+  expect(took).toBeLessThan(3600) // the total cap, not one cap per lookup (two would be 6 s)
 })
 
 test('a hung ssh -G is not started again when the failed-lookup and verdict TTLs expire', async ($, on) => {
@@ -600,12 +595,17 @@ test('plan_only: an override set elsewhere in the session does not lift the guar
   expect(await verdictText($, edit)).toBe(PLAN_ONLY_BLOCK_MESSAGE)
 })
 
-test('fail closed: a git error blocks when the cache holds a plan_only project the viewer does not own', async ($, on) => {
-  const h = host({ store: planOnlyStore('viewer'), gitThrows: true })
-  engine(on, h)
-  await start($)
-  expect(await verdictText($, edit)).toBe(PLAN_ONLY_BLOCK_MESSAGE)
-})
+// B3: a git error hides the remotes, so outside a .swarm2/project.yaml checkout nothing ties the directory to the plan_only
+// project in the cache: fail open (a plan_only project elsewhere no longer blocks unrelated directories).
+for (const failure of [{ gitThrows: true }, { gitExit: 128 }]) {
+  test(`fail open: a git error (${Object.keys(failure)[0]}) in a checkout without .swarm2/project.yaml runs, even with a plan_only cache`, async ($, on) => {
+    const h = host({ store: planOnlyStore('viewer'), ...failure })
+    engine(on, h)
+    await start($)
+    expect(await verdictText($, edit)).toBe('ran')
+    expect(await verdictText($, { tool: 'Write', file_path: '/other/x.ts', content: 'x' })).toBe('ran')
+  })
+}
 
 test('fail closed: a .swarm2/project.yaml checkout stays blocked when the store throws', async ($, on) => {
   const h = host({ storeThrows: true })
@@ -644,3 +644,195 @@ test('an unexpected error inside the guard fails open elsewhere', async ($, on) 
   h.cwdThrowsOnce = true
   expect(await verdictText($, { tool: 'Write', file_path: '/other/x.ts', content: 'x' })).toBe('ran')
 })
+
+test('fail closed: an unexpected error inside the guard runs in an unrelated checkout even with a plan_only cache', async ($, on) => {
+  const h = host({ store: planOnlyStore('developer') })
+  engine(on, h)
+  await start($)
+  h.cwdThrowsOnce = true
+  expect(await verdictText($, { tool: 'Write', file_path: '/other/x.ts', content: 'x' })).toBe('ran')
+})
+
+test('fail closed: an unexpected error plus a git error in a plan_only cache checkout without yaml runs (nothing ties it to the project)', async ($, on) => {
+  const h = host({ store: planOnlyStore('developer'), gitThrows: true })
+  engine(on, h)
+  await start($)
+  h.cwdThrowsOnce = true
+  expect(await verdictText($, edit)).toBe('ran')
+})
+
+// ---- a .swarm2/project.yaml checkout whose plan_only is unknown (B3/B4, plugin 0.5.1) ----
+
+/** /yp: a checkout with .swarm2/project.yaml and an acme/app remote (or the remote given). */
+function yamlHost(over: Partial<Host> = {}, remote = 'origin\tgit@github.com:Acme/App.git (fetch)\n'): Host {
+  const h = host({ cwd: '/yp', posts: [], ...over })
+  for (const f of ['/yp', '/yp/.git', '/yp/.swarm2', '/yp/.swarm2/project.yaml', '/yp/src', '/yp/src/a.ts']) h.files.add(f)
+  h.remotes['/yp'] = remote
+  h.store.set('statusToken', 's2s_test')
+  return h
+}
+const ypEdit = { tool: 'Edit', file_path: '/yp/src/a.ts', old_string: 'a', new_string: 'b' }
+const overrideReports = (h: Host) => h.posts!.filter(p => p.url.endsWith('/me/guard/override')).map(p => p.body as LocalAuditEntry)
+const staleStore = (meta?: Record<string, unknown>) =>
+  new Map<string, unknown>([['guardProjects', { repos: ['acme/app'], at: Date.now() - TTL - 60_000, ...(meta ? { meta } : {}) }]])
+
+for (const [label, store] of [
+  ['an empty project cache', new Map<string, unknown>()],
+  ['a stale project cache', staleStore({ 'acme/app': { role: 'developer', plan_only: false } })],
+  ['a stale cache that named the viewer owner', staleStore({ 'acme/app': { role: 'owner', plan_only: true } })],
+] as const) {
+  test(`plan_only unknown: ${label} in a .swarm2/project.yaml checkout refuses /swarm2-local on and says how to fix it`, async ($, on) => {
+    const h = yamlHost({ store: new Map(store) })
+    engine(on, h)
+    await start($)
+    expect(await verdictText($, ypEdit)).toBe(BLOCK_MESSAGE)
+    const text = (await command($, 'swarm2-local', 'on')).text ?? ''
+    expect(text).toBe(PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE)
+    expect(text).toContain('/swarm2-token')
+    expect(text).toContain('git remote -v')
+    expect(await verdictText($, ypEdit)).toBe(BLOCK_MESSAGE)
+    expect(overrideReports(h).map(b => [b.value, b.source, b.action])).toEqual([['on', 'command', 'refused']])
+    expect((h.store.get('localEditsAudit') as LocalAuditEntry[])[0]!.action).toBe('refused')
+  })
+}
+
+test('plan_only unknown: a fork or renamed remote while the fresh feed holds a plan_only project the viewer does not own is refused', async ($, on) => {
+  const h = yamlHost({ store: planOnlyStore('developer') }, 'origin\thttps://github.com/me/app-renamed (fetch)\n')
+  engine(on, h)
+  await start($)
+  expect((await command($, 'swarm2-local', 'on')).text).toBe(PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE)
+  expect(await verdictText($, ypEdit)).toBe(BLOCK_MESSAGE)
+  expect(overrideReports(h).map(b => b.action)).toEqual(['refused'])
+})
+
+test('plan_only unknown: a git error in a .swarm2/project.yaml checkout stays fail-closed (override refused)', async ($, on) => {
+  const h = yamlHost({ store: planOnlyStore('developer'), gitThrows: true })
+  engine(on, h)
+  await start($)
+  expect(await verdictText($, ypEdit)).toBe(BLOCK_MESSAGE)
+  expect((await command($, 'swarm2-local', 'on')).text).toBe(PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE)
+  expect(await verdictText($, ypEdit)).toBe(BLOCK_MESSAGE)
+})
+
+test('a fork remote is accepted once a fresh feed holds no plan_only project the viewer does not own', async ($, on) => {
+  const h = yamlHost({ store: planOnlyStore('owner') }, 'origin\thttps://github.com/me/app-renamed (fetch)\n')
+  engine(on, h)
+  await start($)
+  expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
+  expect(await verdictText($, ypEdit)).toBe('ran')
+  expect(overrideReports(h).map(b => b.action)).toEqual(['applied'])
+})
+
+test('a fresh feed saying plan_only false for the project accepts the override in a .swarm2/project.yaml checkout', async ($, on) => {
+  const h = yamlHost({ store: planOnlyStore('developer', false) })
+  engine(on, h)
+  await start($)
+  expect(await verdictText($, ypEdit)).toBe(BLOCK_MESSAGE)
+  expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
+  expect(await verdictText($, ypEdit)).toBe('ran')
+})
+
+test('a fresh feed saying plan_only true refuses a non-owner in a .swarm2/project.yaml checkout (plan-only message)', async ($, on) => {
+  const h = yamlHost({ store: planOnlyStore('maintainer') })
+  engine(on, h)
+  await start($)
+  expect((await command($, 'swarm2-local', 'on')).text).toBe(PLAN_ONLY_REFUSED_MESSAGE)
+  expect(await verdictText($, ypEdit)).toBe(PLAN_ONLY_BLOCK_MESSAGE)
+})
+
+test('the owner of a plan_only project may override in its .swarm2/project.yaml checkout', async ($, on) => {
+  const h = yamlHost({ store: planOnlyStore('owner') })
+  engine(on, h)
+  await start($)
+  expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
+  expect(await verdictText($, ypEdit)).toBe('ran')
+})
+
+test('plan_only unknown: SWARM2_LOCAL_EDITS=1 is refused and reported as refused', async ($, on) => {
+  const h = yamlHost({ store: new Map(), env: '1' })
+  engine(on, h)
+  await start($)
+  expect(await verdictText($, ypEdit)).toBe(BLOCK_MESSAGE)
+  expect(overrideReports(h).map(b => [b.source, b.action])).toEqual([['env', 'refused']])
+})
+
+test('an unrelated directory keeps today\'s behaviour; an override set there never lifts a plan_only-unknown checkout', async ($, on) => {
+  const h = yamlHost({ store: new Map(), cwd: '/other' })
+  engine(on, h)
+  await start($)
+  expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
+  expect(await verdictText($, { tool: 'Write', file_path: '/other/x.ts', content: 'x' })).toBe('ran')
+  expect(await verdictText($, { tool: 'Write', file_path: '/repo/x.ts', content: 'x' })).toBe('ran') // no cache: /repo is not known
+  expect(await verdictText($, ypEdit)).toBe(PLAN_ONLY_UNKNOWN_BLOCK_MESSAGE)
+})
+
+// ---- the plugin report (POST /me/plugin/report) ----
+
+const sleep = (ms: number) => new Promise(r => (globalThis as unknown as { setTimeout: (f: (v?: unknown) => void, ms: number) => unknown }).setTimeout(r, ms))
+async function settle(h: Host, n: number): Promise<void> {
+  for (let i = 0; i < 100 && (h.reports?.length ?? 0) < n; i++) await sleep(10)
+  await sleep(30) // anything more that was going to arrive
+}
+
+test('the plugin reports version and guard state at session start, once per window, at once when the guard changes', async ($, on) => {
+  const h = host({ reports: [], posts: [] })
+  h.store.set('statusToken', 's2s_test')
+  engine(on, h)
+  await start($)
+  await settle(h, 1)
+  expect(h.reports).toEqual([{ auth: 'Bearer s2s_test', body: { client: 'claude-code', plugin_version: '0.5.1', guard: 'on', session: 'sess-1' } }])
+  for (let i = 0; i < 3; i++) await outcome($, { tool: 'Read', file_path: '/repo/src/a.ts' })
+  await command($, 'swarm2')
+  await settle(h, 2)
+  expect(h.reports!.length).toBe(1) // throttled: tool calls and pane polls inside the window send nothing more
+  await command($, 'swarm2-local', 'on')
+  await settle(h, 2)
+  expect(h.reports!.map(r => (r.body as { guard: string }).guard)).toEqual(['on', 'off'])
+  await command($, 'swarm2-local', 'off')
+  await settle(h, 3)
+  expect(h.reports!.map(r => (r.body as { guard: string }).guard)).toEqual(['on', 'off', 'on'])
+  // the override report is separate and unchanged
+  expect(overrideReports(h).map(b => b.value)).toEqual(['on', 'off'])
+})
+
+test('SWARM2_LOCAL_EDITS reports the guard off from the start', async ($, on) => {
+  const h = host({ reports: [], env: '1' })
+  h.store.set('statusToken', 's2s_test')
+  engine(on, h)
+  await start($)
+  await settle(h, 1)
+  expect(h.reports!.map(r => (r.body as { guard: string }).guard)).toEqual(['off'])
+})
+
+test('a refused override leaves the reported guard on', async ($, on) => {
+  const h = host({ store: planOnlyStore('developer'), reports: [], posts: [] })
+  h.store.set('statusToken', 's2s_test')
+  engine(on, h)
+  await start($)
+  await settle(h, 1)
+  await command($, 'swarm2-local', 'on')
+  await settle(h, 2)
+  expect(h.reports!.map(r => (r.body as { guard: string }).guard)).toEqual(['on'])
+})
+
+test('without a status token nothing is reported and nothing breaks', async ($, on) => {
+  const h = host({ reports: [] })
+  engine(on, h)
+  await start($)
+  await settle(h, 1)
+  expect(h.reports).toEqual([])
+  expect(await outcome($, { tool: 'Bash', command: 'git commit -m x' })).toBe('blocked')
+})
+
+for (const reportStatus of [500, 400]) {
+  test(`a report the server rejects (HTTP ${reportStatus}) never blocks edits or the override`, async ($, on) => {
+    const h = host({ reports: [], reportStatus })
+    h.store.set('statusToken', 's2s_test')
+    engine(on, h)
+    await start($)
+    await settle(h, 1)
+    expect(h.reports!.length).toBe(1)
+    expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
+    expect(await outcome($, { tool: 'Bash', command: 'git commit -m x' })).toBe('ran')
+  })
+}

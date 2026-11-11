@@ -1,13 +1,16 @@
 // The local-edit guard's I/O half: where a path's checkout is, whether that checkout is a Swarm2 project (a remote named in
 // the cached project list, or .swarm2/project.yaml at its root), the /swarm2-local override and its audit log. Every
-// detection error lets the call through (fail open); only a positive match blocks.
+// detection error lets the call through (fail open); only a positive match blocks — except in a checkout that has
+// .swarm2/project.yaml or whose remote names a plan_only project the viewer does not own: there the guard fails closed.
 import type { EngineInterface, ToolCallResult } from 'claude-code'
 
 import {
   aliasCandidates, appendAudit, BLOCK_MESSAGE, envAllowsLocal, GUARDED_TOOLS, freshMeta, freshProjects, isInside, normalizePath, normalizeRepos, normalizeRemoteWithHost, parentDir, parseRemotes, parseSshHostname,
-  PLAN_ONLY_BLOCK_MESSAGE, planOnlyRefuses, projectMeta, projectsFromResult, remotesMatch, toolWriteTargets,
+  PLAN_ONLY_BLOCK_MESSAGE, PLAN_ONLY_UNKNOWN_BLOCK_MESSAGE, planOnlyRefuses, projectMeta, projectsFromResult, remotesMatch, toolWriteTargets,
 } from './guard'
 import type { LocalAuditEntry, ProjectMeta, ProjectsCache } from './guard'
+import { postToSwarm2 } from './connection'
+import { reportPluginState } from './plugin-report'
 
 export const PROJECTS_KEY = 'guardProjects'
 export const AUDIT_KEY = 'localEditsAudit'
@@ -18,7 +21,9 @@ export const AUDIT_KEY = 'localEditsAudit'
 // a checkout's verdict, for a minute: one git call per checkout and minute, not per Bash command
 const VERDICT_MS = 60_000
 // registered: a Swarm2 checkout; refuses: plan_only project and the viewer is not its owner (the override cannot lift it);
-// unknown: the remotes could not be read although the cache lists a project that would refuse (fail closed)
+// unknown: .swarm2/project.yaml is present but no fresh project list identifies the project (no list, a stale one, no
+// matching remote — a fork or a renamed repo —, or git failed) and the list does not rule plan_only out: the override is
+// refused and does not lift the guard there (plan_only unknown, fail closed)
 type Verdict = { registered: boolean; refuses: boolean; unknown: boolean; at: number }
 const verdicts = new Map<string, Verdict>()
 // the last list written to the store, so a poll every 5 s writes only on a change or once an hour
@@ -148,14 +153,15 @@ async function resolveHostnames($: EngineInterface, hosts: string[]): Promise<Ma
 /** What the guard knows of the checkout at `root`: a Swarm2 project (.swarm2/project.yaml at its root, or any git remote in
  * the cached project list), and whether a plan_only project in the cache refuses this viewer (not the owner). An ssh alias is
  * resolved with `ssh -G`; when that fails the remote's owner/repo path alone decides (fail closed). When no remote matches but
- * one looks like GitHub, warns once per verdict window. Git errors answer "not registered" (fail open) — except when the
- * cache lists a project that would refuse this viewer: then `unknown` is set and the caller denies. */
+ * one looks like GitHub, warns once per verdict window. Git errors answer "not registered" (fail open) outside a checkout
+ * with .swarm2/project.yaml; with the yaml, a project the list cannot identify is plan_only-unknown (see Verdict). */
 async function checkoutVerdict($: EngineInterface, root: string): Promise<Verdict> {
   const cached = verdicts.get(root)
   if (cached && clock() - cached.at < VERDICT_MS) return cached
-  let registered = await exists($, `${root === '/' ? '' : root}/.swarm2/project.yaml`)
+  const yaml = await exists($, `${root === '/' ? '' : root}/.swarm2/project.yaml`)
+  let registered = yaml
   let refuses = false
-  let unknown = false
+  let identified = false
   let projects: string[] | null = null
   let meta: Record<string, ProjectMeta> = {}
   try {
@@ -164,7 +170,6 @@ async function checkoutVerdict($: EngineInterface, root: string): Promise<Verdic
     meta = freshMeta(stored, Date.now())
   } catch { /* none cached */ }
   if (projects && projects.length) {
-    const wouldRefuse = Object.values(meta).some(planOnlyRefuses)
     try {
       const out = await $.process.run(['git', '-C', root, 'remote', '-v'], { timeoutMs: 3000 })
       if (out.exitCode === 0) {
@@ -183,13 +188,19 @@ async function checkoutVerdict($: EngineInterface, root: string): Promise<Verdic
         const matched = repos.map(r => r.toLowerCase()).filter(r => projects!.includes(r))
         const remoteMatch = remotesMatch(repos, projects)
         refuses = matched.some(r => planOnlyRefuses(meta[r]))
+        identified = remoteMatch
         if (!registered && !remoteMatch && githubLike.length) {
           warn(`swarm2 guard: no Swarm2 project matches this checkout's remotes (${[...new Set(githubLike)].join(', ')}); local edits are allowed`)
         }
         registered = registered || remoteMatch
-      } else unknown = wouldRefuse
-    } catch { unknown = wouldRefuse } // git unavailable: fail open unless a plan-only project could be this one
+      }
+    } catch { /* git unavailable: fail open unless the checkout has .swarm2/project.yaml (below) */ }
   }
+  // A fresh list without any plan_only project that refuses this viewer rules plan_only out for every project the viewer
+  // can reach, so an unidentified yaml checkout is only "unknown" while the list is missing, stale or names such a project.
+  // A list entry without role/plan_only (learnt from swarm_projects alone, before the control feed) rules nothing out.
+  const ruledOut = projects !== null && projects.every(r => meta[r] !== undefined) && !Object.values(meta).some(planOnlyRefuses)
+  const unknown = yaml && !identified && !ruledOut
   const verdict: Verdict = { registered: registered || refuses, refuses, unknown, at: clock() }
   verdicts.set(root, verdict)
   return verdict
@@ -209,35 +220,44 @@ export async function isLocalOn($: EngineInterface): Promise<boolean> {
   try { return (await $.state.get({ plugin: 'swarm2', key: 'localEdits' })).value === true } catch { return false }
 }
 
-/** Reports an override to Swarm2 (set by register.tsx, which knows the base URL and token). Best-effort: it never blocks. */
-export type OverrideReporter = ($: EngineInterface, entry: LocalAuditEntry) => Promise<void>
-let reporter: OverrideReporter | null = null
-export function setOverrideReporter(fn: OverrideReporter | null): void { reporter = fn }
+export const GUARD_OVERRIDE_PATH = '/me/guard/override'
 
-/** Whether the checkout of the session's working directory is a plan_only project that refuses this viewer. Detection errors
- * count as "refused" only when the checkout is known (yaml or a cached plan_only project could not be ruled out). */
-async function cwdRefuses($: EngineInterface): Promise<boolean> {
+/** Why the session's working directory refuses the override: 'plan_only' (a plan_only project this viewer does not own),
+ * 'unknown' (a .swarm2/project.yaml checkout whose plan_only cannot be ruled out, see Verdict), or null. A detection error
+ * answers null (fail open). */
+async function cwdRefuses($: EngineInterface): Promise<'plan_only' | 'unknown' | null> {
   try {
     const root = await checkoutRoot($, await $.session.cwd())
-    if (!root) return false
+    if (!root) return null
     const v = await checkoutVerdict($, root)
-    return v.refuses || v.unknown
-  } catch { return false }
+    return v.refuses ? 'plan_only' : v.unknown ? 'unknown' : null
+  } catch { return null }
+}
+
+/** The guard state the plugin reports to Swarm2: off while an override is in effect. Best-effort, in the background. */
+export async function reportGuard($: EngineInterface): Promise<void> {
+  try { void reportPluginState($, !(await isLocalOn($))) } catch { /* best-effort */ }
 }
 
 /** Sets this session's override, appends the local audit entry and reports it to Swarm2 (best-effort: a failed or slow
  * report never blocks the override). The hook is a safety net, not enforcement. Turning it ON in a plan_only project's
- * checkout is refused for everyone but the owner: nothing is set, the attempt is audited and reported with action 'refused'.
- * Returns 'refused' or 'applied'. */
-export async function setLocal($: EngineInterface, value: 'on' | 'off', source: LocalAuditEntry['source'] = 'command'): Promise<'applied' | 'refused'> {
-  const refused = value === 'on' && await cwdRefuses($)
+ * checkout is refused for everyone but the owner, and in a .swarm2/project.yaml checkout whose plan_only is unknown for
+ * everyone until a fresh feed rules it out: nothing is set, the attempt is audited and reported with action 'refused'.
+ * Returns 'applied', 'refused' (plan_only) or 'refused_unknown'. */
+export async function setLocal(
+  $: EngineInterface, value: 'on' | 'off', source: LocalAuditEntry['source'] = 'command',
+): Promise<'applied' | 'refused' | 'refused_unknown'> {
+  const why = value === 'on' ? await cwdRefuses($) : null
+  const refused = why !== null
   if (!refused && source === 'command') await $.state.set({ plugin: 'swarm2', key: 'localEdits' }, value === 'on')
   const entry: LocalAuditEntry = { at: new Date().toISOString(), session: await sessionId($), value, source, action: refused ? 'refused' : 'applied' }
   try { await $.store.set(AUDIT_KEY, appendAudit(await $.store.get(AUDIT_KEY), entry)) } catch { /* the local log is secondary */ }
-  if (reporter) {
-    try { await Promise.race([reporter($, entry), new Promise<void>(r => setTimeout(r, 4000))]) } catch { /* best-effort */ }
-  }
-  return refused ? 'refused' : 'applied'
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([postToSwarm2($, GUARD_OVERRIDE_PATH, entry), new Promise<boolean>(r => { timer = setTimeout(() => r(false), 4000) })])
+  } catch { /* best-effort */ } finally { clearTimeout(timer) }
+  if (!refused && source === 'command') await reportGuard($) // the guard state changed: report it now
+  return why === 'plan_only' ? 'refused' : why === 'unknown' ? 'refused_unknown' : 'applied'
 }
 
 /** At session start: the home directory (for `~` in commands) and the SWARM2_LOCAL_EDITS opt-out of an automated
@@ -254,18 +274,27 @@ export async function initGuard($: EngineInterface): Promise<void> {
       }
     }
   } catch { /* no process runner (a non-CLI surface): no ~ expansion, no env opt-out */ }
+  await reportGuard($) // session start: tell Swarm2 which plugin runs and whether the guard is on
 }
 
 export function isEnvOverride(): boolean {
   return envOverride
 }
 
-export type Blocked = { paths: string[]; planOnly: boolean }
+/** planOnly: a target is in a plan_only project the viewer does not own; unknown: the override is on but a target is in a
+ * .swarm2/project.yaml checkout whose plan_only cannot be ruled out. */
+export type Blocked = { paths: string[]; planOnly: boolean; unknown: boolean }
+
+/** The deny message for a non-empty Blocked. */
+export function blockedMessage(b: Blocked): string {
+  return b.planOnly ? PLAN_ONLY_BLOCK_MESSAGE : b.unknown ? PLAN_ONLY_UNKNOWN_BLOCK_MESSAGE : BLOCK_MESSAGE
+}
 
 /** The paths a call writes that land in a Swarm2 checkout; empty means let it run. The /swarm2-local override does not
- * apply to a plan_only project the viewer does not own (planOnly is then set). */
+ * apply to a plan_only project the viewer does not own (planOnly is then set), nor to a .swarm2/project.yaml checkout whose
+ * plan_only is unknown (unknown is then set). */
 export async function blockedTargets($: EngineInterface, tool: string, input: Record<string, unknown>): Promise<Blocked> {
-  const none: Blocked = { paths: [], planOnly: false }
+  const none: Blocked = { paths: [], planOnly: false, unknown: false }
   if (!GUARDED_TOOLS.has(tool)) return none
   const cwd = await $.session.cwd()
   const targets = toolWriteTargets(tool, input, { cwd, home })
@@ -274,31 +303,49 @@ export async function blockedTargets($: EngineInterface, tool: string, input: Re
   const roots = new Map<string, Verdict>()
   const hits: string[] = []
   let planOnly = false
+  let unknown = false
   for (const t of targets) {
     const root = await checkoutRoot($, t)
     if (!root) continue
     if (!roots.has(root)) roots.set(root, await checkoutVerdict($, root))
     const v = roots.get(root)!
     if (!isInside(t, root)) continue
-    if (v.refuses || v.unknown) { hits.push(t); planOnly = true } // an override never lifts plan_only
+    if (v.refuses) { hits.push(t); planOnly = true } // an override never lifts plan_only
+    else if (v.unknown && on) { hits.push(t); unknown = true } // nor a plan_only that cannot be ruled out
     else if (v.registered && !on) hits.push(t)
   }
-  return { paths: hits, planOnly }
+  return { paths: hits, planOnly, unknown }
 }
 
-/** After an internal error: deny when a target's checkout has .swarm2/project.yaml or the cache names a plan_only project
- * the viewer does not own (fail closed); otherwise let the call run as before. Every step here is itself guarded. */
+/** The lower-cased owner/repo paths `git remote -v` names, without any ssh alias lookup (an alias counts by its path alone,
+ * as when its lookup fails); null when git fails. */
+async function remotePaths($: EngineInterface, root: string): Promise<string[] | null> {
+  try {
+    const out = await $.process.run(['git', '-C', root, 'remote', '-v'], { timeoutMs: 3000 })
+    if (out.exitCode !== 0) return null
+    return [...parseRemotes(out.stdout), ...aliasCandidates(out.stdout).map(c => c.path)].map(r => r.toLowerCase())
+  } catch { return null }
+}
+
+/** After an internal error: deny only inside a checkout that belongs to a Swarm2 project the guard must not guess about —
+ * one with .swarm2/project.yaml (BLOCK_MESSAGE), or one whose remote names a cached plan_only project the viewer does not
+ * own (PLAN_ONLY_BLOCK_MESSAGE). Anywhere else, including a checkout whose remotes cannot be read, the call runs (fail
+ * open). Every step here is itself guarded. */
 async function failClosed($: EngineInterface, tool: string, input: Record<string, unknown>): Promise<string | null> {
   try {
     if (!GUARDED_TOOLS.has(tool)) return null
     const targets = toolWriteTargets(tool, input, { cwd: await $.session.cwd(), home })
-    let planOnlyKnown = false
-    try { planOnlyKnown = Object.values(freshMeta(await $.store.get(PROJECTS_KEY), Date.now())).some(planOnlyRefuses) } catch { /* unknown */ }
+    let refusing: string[] = []
+    try {
+      refusing = Object.entries(freshMeta(await $.store.get(PROJECTS_KEY), Date.now())).filter(([, m]) => planOnlyRefuses(m)).map(([r]) => r)
+    } catch { /* unknown: only the yaml can tell */ }
     for (const t of targets) {
       const root = await checkoutRoot($, t)
-      if (!root) continue
+      if (!root || !isInside(t, root)) continue
       if (await exists($, `${root === '/' ? '' : root}/.swarm2/project.yaml`)) return BLOCK_MESSAGE
-      if (planOnlyKnown) return PLAN_ONLY_BLOCK_MESSAGE
+      if (!refusing.length) continue
+      const remotes = await remotePaths($, root)
+      if (remotes && remotes.some(r => refusing.includes(r))) return PLAN_ONLY_BLOCK_MESSAGE
     }
   } catch { /* nothing more can be told */ }
   return null
@@ -311,6 +358,7 @@ const isProjectsTool = (tool: string) => /^mcp__.+__swarm_projects$/.test(tool)
 export async function guardToolCall(
   $: EngineInterface, tool: string, input: Record<string, unknown>, pass: () => Promise<ToolCallResult>,
 ): Promise<ToolCallResult> {
+  void reportGuard($) // throttled to once per few minutes per session; never awaited
   if (isProjectsTool(tool)) {
     const answered = await pass()
     try {
@@ -325,5 +373,5 @@ export async function guardToolCall(
     const denied = await failClosed($, tool, input)
     return denied ? { deny: denied } : pass()
   }
-  return blocked.paths.length ? { deny: blocked.planOnly ? PLAN_ONLY_BLOCK_MESSAGE : BLOCK_MESSAGE } : pass()
+  return blocked.paths.length ? { deny: blockedMessage(blocked) } : pass()
 }

@@ -14,6 +14,16 @@ export const PLAN_ONLY_BLOCK_MESSAGE =
 export const PLAN_ONLY_REFUSED_MESSAGE =
   'Local edits are refused: this project is plan-only and only a project owner can turn them on. Plan locally and send the plan with swarm_plan_propose. (Other clients or a plain git push are not stopped by this guard.)'
 
+// A checkout with .swarm2/project.yaml whose project the plugin cannot identify from a fresh project list (no list, a list
+// older than PROJECTS_TTL_MS, no remote matching a listed project — a fork or a renamed repo —, or `git remote -v` failed)
+// may be a plan_only project: the override is refused until a fresh control feed rules that out.
+const PLAN_ONLY_UNKNOWN_WHY =
+  'this checkout has .swarm2/project.yaml, but the Swarm2 plugin cannot confirm that its project is not plan-only (the cached project list is missing or older than 7 days, or no git remote matches one of your Swarm2 projects — a fork, a renamed repo, or `git remote -v` failed)'
+const PLAN_ONLY_UNKNOWN_FIX =
+  'To fix: open a Claude Code session with the Swarm2 status token set (/swarm2-token) so the control feed refreshes the project list (or call swarm_projects), and check that `git remote -v` names the project\'s GitHub repository. In a plan-only project only the owner can allow local edits; plan locally and send the plan with swarm_plan_propose.'
+export const PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE = `Local edits are refused: ${PLAN_ONLY_UNKNOWN_WHY}. ${PLAN_ONLY_UNKNOWN_FIX}`
+export const PLAN_ONLY_UNKNOWN_BLOCK_MESSAGE = `Local edits stay blocked here even with /swarm2-local on: ${PLAN_ONLY_UNKNOWN_WHY}. ${PLAN_ONLY_UNKNOWN_FIX}`
+
 /** What the control feed says about one project (plan_only absent from an older server = false; role absent = unknown). */
 export type ProjectMeta = { role?: string; plan_only: boolean }
 export type ProjectsCache = { repos: string[]; at: number; /** lower-cased repo -> role and plan_only */ meta?: Record<string, ProjectMeta> }
