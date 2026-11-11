@@ -367,7 +367,7 @@ test('the userConfig status token is used against the prod URL by default', { op
   for (const c of server.calls!) expect(c.authorization).toBe('Bearer s2s_configuredconfiguredtoken')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /● PROD/ })) ? 'found' : 'missing ● PROD').toBe('found')
-  expect((await ui.find({ type: 'Text', text: /plugin v0\.4\.0/ })) ? 'found' : 'missing plugin version').toBe('found')
+  expect((await ui.find({ type: 'Text', text: /plugin v0\.5\.0/ })) ? 'found' : 'missing plugin version').toBe('found')
   await ui.unmount()
 })
 
@@ -546,4 +546,18 @@ test('a 401 on the control feed alone keeps the status-feed render', async ($, o
   expect(await ui.find({ type: 'Text', text: /status token rejected/ })).toBeUndefined()
   await has(ui, /control feed answered HTTP 401/)
   await ui.unmount()
+})
+
+test('the control feed projects are cached with role and plan_only (plan_only absent = false)', async ($, on) => {
+  const store = new Map<string, unknown>([['statusToken', 's2s_testtokentesttokentest']])
+  const projects = [
+    { ...PROJECTS[0]!, repo: 'Acme/Plan', role: 'developer', plan_only: true },
+    { ...PROJECTS[1]!, repo: 'acme/legacy', role: 'owner' }, // an older server sends no plan_only
+  ]
+  engine(on, { control: { ...CONTROL, runs: [], projects }, status: { runs: [], deployments: [], messages: [] } }, [], null, undefined, store)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const c = store.get('guardProjects') as { repos: string[]; meta: Record<string, unknown> }
+  expect(c.repos).toEqual(['acme/legacy', 'acme/plan'])
+  expect(c.meta).toEqual({ 'acme/plan': { role: 'developer', plan_only: true }, 'acme/legacy': { role: 'owner', plan_only: false } })
 })

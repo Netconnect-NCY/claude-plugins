@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { parseLocalCommand } from './guard'
+import { parseLocalCommand, PLAN_ONLY_REFUSED_MESSAGE } from './guard'
 import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, setLocal, setOverrideReporter } from './guard-hook'
 import { parseRouting, routingLine } from './routing'
 import type { Account, Attention, Deployment, Feed, Message, ProjectRow, Run, UsageWindow } from '../types'
@@ -11,7 +11,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.4.1'
+export const PLUGIN_VERSION = '0.5.0'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -301,7 +301,7 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
     const body = control.body as Partial<Feed>
     // the guard's list of Swarm2 repos: every project the viewer is a member of
     if (Array.isArray(body.projects)) {
-      try { await rememberProjects($, body.projects.map(p => p?.repo)) } catch { /* the store refused: the old list stands */ }
+      try { await rememberProjects($, body.projects.map(p => ({ repo: p?.repo, role: p?.role, plan_only: (p as { plan_only?: unknown } | null)?.plan_only === true }))) } catch { /* the store refused: the old list stands */ }
     }
     next = {
       ...EMPTY, ...body, source: 'control', runs: withMergeDetail(body.runs ?? [], statusBody),
@@ -383,7 +383,8 @@ export const register: Register = (on, options) => {
         ? `Local edits to Swarm2 repos are ON in this session${isEnvOverride() ? ' (SWARM2_LOCAL_EDITS)' : ''}. /swarm2-local off blocks them again.`
         : 'Local edits to Swarm2 repos are OFF (the default): plan locally → swarm_plan_propose; implement only via Swarm2 runs (swarm_task_submit). /swarm2-local on allows them for this session.' }
     }
-    await setLocal($, cmd.value)
+    const result = await setLocal($, cmd.value)
+    if (result === 'refused') return { text: PLAN_ONLY_REFUSED_MESSAGE }
     $.ui.status(statusLine(await read($, feed), environmentLabel(base).name, await isLocalOn($)))
     if (cmd.value === 'off' && isEnvOverride()) return { text: 'Local edits stay ON: SWARM2_LOCAL_EDITS is set for this session.' }
     return { text: cmd.value === 'on'

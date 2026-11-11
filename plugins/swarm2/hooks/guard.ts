@@ -9,10 +9,20 @@ export const BLOCK_MESSAGE = 'This repo is worked on through Swarm2 — submit a
 /** How long the cached project list (from the control feed or a swarm_projects call) counts; older, remotes match nothing. */
 export const PROJECTS_TTL_MS = 7 * 24 * 3_600_000
 
-export type ProjectsCache = { repos: string[]; at: number }
+export const PLAN_ONLY_BLOCK_MESSAGE =
+  'This project is plan-only: local code edits are not allowed for your role. Plan locally and send the plan with swarm_plan_propose (swarm_plan_submit arrives in a later release); only a project owner can allow local edits'
+export const PLAN_ONLY_REFUSED_MESSAGE =
+  'Local edits are refused: this project is plan-only and only a project owner can turn them on. Plan locally and send the plan with swarm_plan_propose. (Other clients or a plain git push are not stopped by this guard.)'
 
-/** One /swarm2-local change, appended to the plugin store and never edited. */
-export type LocalAuditEntry = { at: string; session: string; value: 'on' | 'off'; source: 'command' | 'env' }
+/** What the control feed says about one project (plan_only absent from an older server = false; role absent = unknown). */
+export type ProjectMeta = { role?: string; plan_only: boolean }
+export type ProjectsCache = { repos: string[]; at: number; /** lower-cased repo -> role and plan_only */ meta?: Record<string, ProjectMeta> }
+
+/** One /swarm2-local change, appended to the plugin store and never edited. `action` is 'refused' when a plan-only project
+ * turned the override down (value/source then name what was asked for) and 'applied' otherwise. */
+export type LocalAuditEntry = {
+  at: string; session: string; value: 'on' | 'off'; source: 'command' | 'env'; action?: 'applied' | 'refused'
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Remotes and projects
@@ -129,6 +139,36 @@ export function aliasCandidates(output: string): AliasCandidate[] {
 export function normalizeRepos(repos: readonly unknown[]): string[] {
   return [...new Set(repos.flatMap(r => (typeof r === 'string' && /^[^/\s]+\/[^/\s]+$/.test(r.trim()) ? [r.trim().toLowerCase()] : [])))]
 }
+
+/** repo -> { role, plan_only } of feed project objects; plain strings and objects without a usable repo are skipped.
+ * `plan_only` is true only for a literal true. */
+export function projectMeta(projects: readonly unknown[]): Record<string, ProjectMeta> {
+  const out: Record<string, ProjectMeta> = {}
+  for (const p of projects) {
+    if (p === null || typeof p !== 'object') continue
+    const o = p as Record<string, unknown>
+    const repo = normalizeRepos([o.repo])[0]
+    if (!repo) continue
+    out[repo] = { ...(typeof o.role === 'string' ? { role: o.role } : {}), plan_only: o.plan_only === true }
+  }
+  return out
+}
+
+/** The cached repo -> meta map when the cache is well-formed and fresh (same rules as freshProjects), else {}. */
+export function freshMeta(value: unknown, now: number): Record<string, ProjectMeta> {
+  if (freshProjects(value, now) === null) return {}
+  const m = (value as ProjectsCache).meta
+  if (m === null || typeof m !== 'object') return {}
+  const out: Record<string, ProjectMeta> = {}
+  for (const [repo, v] of Object.entries(m)) {
+    if (v === null || typeof v !== 'object') continue
+    out[repo.toLowerCase()] = { ...(typeof v.role === 'string' ? { role: v.role } : {}), plan_only: v.plan_only === true }
+  }
+  return out
+}
+
+/** Whether the viewer may not edit locally in a project with this meta: plan_only and not (known) owner. */
+export const planOnlyRefuses = (m: ProjectMeta | undefined): boolean => m?.plan_only === true && m.role !== 'owner'
 
 /** The cached list when it is well-formed and younger than the TTL, else null (remotes then match nothing). */
 export function freshProjects(value: unknown, now: number): string[] | null {

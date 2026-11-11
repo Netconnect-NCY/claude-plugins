@@ -6,6 +6,7 @@ import {
   aliasCandidate, appendAudit, BLOCK_MESSAGE, bashWriteTargets, envAllowsLocal, freshProjects, MAX_AUDIT, normalizeRemote, normalizeRemoteWithHost, parseLocalCommand, remoteHost,
   parseRemotes, projectsFromResult, PROJECTS_TTL_MS, remotesMatch, toolWriteTargets,
 } from '../hooks/guard'
+import { PLAN_ONLY_BLOCK_MESSAGE, PLAN_ONLY_REFUSED_MESSAGE } from '../hooks/guard'
 import type { LocalAuditEntry } from '../hooks/guard'
 import { resetGuardMemory, setGuardTiming, setGuardWarn } from '../hooks/guard-hook'
 
@@ -162,6 +163,8 @@ type Host = {
   /** `ssh -G` for these aliases never answers; others wait sshDelayMs first */
   sshHang?: string[]
   sshDelayMs?: number
+  /** session.cwd throws on its first call after the session started (an internal error inside the guard) */
+  cwdThrowsOnce?: boolean
 }
 
 function host(over: Partial<Host> = {}): Host {
@@ -185,7 +188,8 @@ function engine(on: On, h: Host) {
   on('ui.toast', () => ({ value: undefined }))
   on('clock.every', () => ({ value: undefined }))
   on('http.fetch', (_, e) => {
-    const init = e as unknown as { url: string; method?: string; headers?: Record<string, string>; body?: string }
+    const raw = e as unknown as { url: string; init?: Record<string, unknown> } & Record<string, unknown>
+    const init = { url: raw.url, ...(raw.init ?? raw) } as { url: string; method?: string; headers?: Record<string, string>; body?: string }
     if (init.method === 'POST') {
       if (h.reportFails === 'throw') throw new Error('network down')
       h.posts?.push({ url: init.url, auth: init.headers?.authorization, body: JSON.parse(init.body ?? 'null') })
@@ -201,7 +205,10 @@ function engine(on: On, h: Host) {
   on('store.set', (_, e) => { h.store.set(e.key, e.value); return { value: undefined } })
   on('store.delete', (_, e) => { h.store.delete(e.key); return { value: undefined } })
   on('session.id', () => ({ value: 'sess-1' }))
-  on('session.cwd', () => ({ value: h.cwd }))
+  on('session.cwd', () => {
+    if (h.cwdThrowsOnce) { h.cwdThrowsOnce = false; throw new Error('boom') }
+    return { value: h.cwd }
+  })
   on('fs.exists', (_, e) => ({ value: h.files.has(e.path) }))
   on('fs.stat', (_, e) => {
     if (!h.files.has(e.path)) throw new Error('ENOENT')
@@ -506,4 +513,134 @@ test('a hung ssh -G is not started again when the failed-lookup and verdict TTLs
     expect(await outcome($, edit)).toBe('blocked')
     expect(sshCalls(h)).toBe(1)
   } finally { setGuardTiming(null) }
+})
+
+// ---- plan_only (plugin 0.5.0) ----
+
+
+const planOnlyStore = (role: string | undefined, plan_only = true) =>
+  new Map<string, unknown>([['guardProjects', { repos: ['acme/app'], at: Date.now(), meta: { 'acme/app': { ...(role ? { role } : {}), plan_only } } }]])
+
+const edit = { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }
+async function verdictText($: Engine, input: Record<string, unknown>): Promise<string> {
+  const r = (await $.tool.call(input as never)) as { text?: string; deny?: string }
+  return r.deny ?? r.text ?? ''
+}
+
+for (const role of ['viewer', 'developer', 'maintainer', undefined]) {
+  test(`plan_only: /swarm2-local on is refused for ${role ?? 'an unknown role'}, edits stay blocked and the refusal is reported`, async ($, on) => {
+    const h = host({ store: planOnlyStore(role), posts: [] })
+    h.store.set('statusToken', 's2s_test')
+    engine(on, h)
+    await start($)
+    expect((await command($, 'swarm2-local', 'on')).text).toBe(PLAN_ONLY_REFUSED_MESSAGE)
+    expect(await verdictText($, edit)).toBe(PLAN_ONLY_BLOCK_MESSAGE)
+    expect(await verdictText($, { tool: 'Bash', command: 'git commit -m x' })).toBe(PLAN_ONLY_BLOCK_MESSAGE)
+    const body = h.posts![0]!.body as LocalAuditEntry
+    expect(h.posts!.length).toBe(1)
+    expect([body.value, body.source, body.action]).toEqual(['on', 'command', 'refused'])
+    expect((h.store.get('localEditsAudit') as LocalAuditEntry[])[0]!.action).toBe('refused')
+  })
+}
+
+test('plan_only: the owner may turn the override on; accepted reports say action applied', async ($, on) => {
+  const h = host({ store: planOnlyStore('owner'), posts: [] })
+  h.store.set('statusToken', 's2s_test')
+  engine(on, h)
+  await start($)
+  expect(await verdictText($, edit)).toBe(BLOCK_MESSAGE)
+  expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
+  expect(await verdictText($, edit)).toBe('ran')
+  expect((h.posts![0]!.body as LocalAuditEntry).action).toBe('applied')
+})
+
+for (const role of ['viewer', 'developer', 'maintainer', 'owner']) {
+  test(`a project without plan_only is unchanged for ${role}`, async ($, on) => {
+    const h = host({ store: planOnlyStore(role, false), posts: [] })
+    engine(on, h)
+    await start($)
+    expect(await verdictText($, edit)).toBe(BLOCK_MESSAGE)
+    expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
+    expect(await verdictText($, edit)).toBe('ran')
+  })
+}
+
+test('a project listed without plan_only (an older server) is unchanged', async ($, on) => {
+  const h = host({ store: new Map([['guardProjects', { repos: ['acme/app'], at: Date.now() }]]) })
+  engine(on, h)
+  await start($)
+  expect(await verdictText($, edit)).toBe(BLOCK_MESSAGE)
+  expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
+  expect(await verdictText($, edit)).toBe('ran')
+})
+
+test('plan_only: SWARM2_LOCAL_EDITS=1 is refused for a non-owner and reported as refused', async ($, on) => {
+  const h = host({ store: planOnlyStore('developer'), env: '1', posts: [] })
+  h.store.set('statusToken', 's2s_test')
+  engine(on, h)
+  await start($)
+  expect(await verdictText($, edit)).toBe(PLAN_ONLY_BLOCK_MESSAGE)
+  expect(h.posts!.map(p => [(p.body as LocalAuditEntry).source, (p.body as LocalAuditEntry).action])).toEqual([['env', 'refused']])
+})
+
+test('plan_only: SWARM2_LOCAL_EDITS=1 is honoured for the owner', async ($, on) => {
+  const h = host({ store: planOnlyStore('owner'), env: '1', posts: [] })
+  h.store.set('statusToken', 's2s_test')
+  engine(on, h)
+  await start($)
+  expect(await verdictText($, edit)).toBe('ran')
+  expect(h.posts!.map(p => [(p.body as LocalAuditEntry).source, (p.body as LocalAuditEntry).action])).toEqual([['env', 'applied']])
+})
+
+test('plan_only: an override set elsewhere in the session does not lift the guard for a non-owner', async ($, on) => {
+  const h = host({ store: planOnlyStore('developer'), cwd: '/other' }) // the session works in an unrelated checkout
+  engine(on, h)
+  await start($)
+  expect((await command($, 'swarm2-local', 'on')).text).toContain('ON')
+  expect(await verdictText($, edit)).toBe(PLAN_ONLY_BLOCK_MESSAGE)
+})
+
+test('fail closed: a git error blocks when the cache holds a plan_only project the viewer does not own', async ($, on) => {
+  const h = host({ store: planOnlyStore('viewer'), gitThrows: true })
+  engine(on, h)
+  await start($)
+  expect(await verdictText($, edit)).toBe(PLAN_ONLY_BLOCK_MESSAGE)
+})
+
+test('fail closed: a .swarm2/project.yaml checkout stays blocked when the store throws', async ($, on) => {
+  const h = host({ storeThrows: true })
+  engine(on, h)
+  await start($)
+  expect(await verdictText($, { tool: 'Write', file_path: '/yaml/src/x.ts', content: 'x' })).toBe(BLOCK_MESSAGE)
+})
+
+test('a git error without plan_only or yaml still fails open', async ($, on) => {
+  const h = host({ gitThrows: true })
+  engine(on, h)
+  await start($)
+  expect(await verdictText($, edit)).toBe('ran')
+})
+
+test('fail closed: an unexpected error inside the guard denies for a yaml checkout', async ($, on) => {
+  const h = host({ store: new Map(), cwdThrowsOnce: false })
+  engine(on, h)
+  await start($)
+  h.cwdThrowsOnce = true
+  expect(await verdictText($, { tool: 'Write', file_path: '/yaml/src/x.ts', content: 'x' })).toBe(BLOCK_MESSAGE)
+})
+
+test('fail closed: an unexpected error inside the guard denies for a plan_only non-owner cache', async ($, on) => {
+  const h = host({ store: planOnlyStore('developer') })
+  engine(on, h)
+  await start($)
+  h.cwdThrowsOnce = true
+  expect(await verdictText($, edit)).toBe(PLAN_ONLY_BLOCK_MESSAGE)
+})
+
+test('an unexpected error inside the guard fails open elsewhere', async ($, on) => {
+  const h = host()
+  engine(on, h)
+  await start($)
+  h.cwdThrowsOnce = true
+  expect(await verdictText($, { tool: 'Write', file_path: '/other/x.ts', content: 'x' })).toBe('ran')
 })
