@@ -24,7 +24,18 @@ const REWRITE_MS = 3_600_000
 let home: string | null = null
 let envOverride = false
 // `ssh -G` answers per host alias: the hostname, or null when it could not be resolved
-const hostnames = new Map<string, string | null>()
+// (a failed lookup is remembered only for FAILED_LOOKUP_MS, a successful one for the session)
+const hostnames = new Map<string, { hostname: string | null; at: number }>()
+const FAILED_LOOKUP_MS = 60_000
+// the `ssh -G` lookups still running, per alias: a lookup that outlives its deadline is not started again
+const lookups = new Map<string, Promise<string | null>>()
+let lookupDeadlineMs = 3000
+let clock: () => number = () => Date.now()
+/** For tests: the clock (verdict and lookup TTLs) and the total `ssh -G` deadline in ms; null restores the defaults. */
+export function setGuardTiming(t: { now?: (() => number) | null; lookupDeadlineMs?: number | null } | null): void {
+  clock = t?.now ?? (() => Date.now())
+  lookupDeadlineMs = t?.lookupDeadlineMs ?? 3000
+}
 
 /** Where the guard's warnings go (stderr); a test swaps it. */
 export type Warn = (message: string) => void
@@ -39,6 +50,7 @@ export function resetGuardMemory(): void {
   home = null
   envOverride = false
   hostnames.clear()
+  lookups.clear()
   warn = defaultWarn
 }
 
@@ -79,19 +91,49 @@ export async function checkoutRoot($: EngineInterface, path: string): Promise<st
   return null
 }
 
-/** The hostname `ssh -G <host>` reports for an ssh alias, cached per host; null when it cannot be told (error, timeout,
- * non-zero exit, no hostname line). */
+/** The hostname `ssh -G <host>` reports for an ssh alias; null when it cannot be told (error, timeout, non-zero exit,
+ * no hostname line). A success is cached for the session, a failure for FAILED_LOOKUP_MS. */
 async function resolveHostname($: EngineInterface, host: string): Promise<string | null> {
-  if (hostnames.has(host)) return hostnames.get(host)!
-  let hostname: string | null = null
-  if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(host)) {
-    try {
-      const out = await $.process.run(['ssh', '-G', host], { timeoutMs: 3000 })
-      if (out.exitCode === 0) hostname = parseSshHostname(out.stdout)
-    } catch { /* unresolved */ }
-  }
-  hostnames.set(host, hostname)
-  return hostname
+  const hit = hostnames.get(host)
+  if (hit && (hit.hostname !== null || clock() - hit.at < FAILED_LOOKUP_MS)) return hit.hostname
+  // a lookup still running (e.g. a hung ssh -G past its deadline) is joined, never doubled
+  const running = lookups.get(host)
+  if (running) return running
+  const pending = (async () => {
+    let hostname: string | null = null
+    if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(host)) {
+      try {
+        const out = await $.process.run(['ssh', '-G', host], { timeoutMs: lookupDeadlineMs })
+        if (out.exitCode === 0) hostname = parseSshHostname(out.stdout)
+      } catch { /* unresolved */ }
+    }
+    hostnames.set(host, { hostname, at: clock() })
+    return hostname
+  })()
+  lookups.set(host, pending)
+  try { return await pending } finally { if (lookups.get(host) === pending) lookups.delete(host) }
+}
+
+/** Resolves several aliases in parallel under ONE overall deadline; a lookup still pending at the deadline counts as
+ * unresolved (null) and is remembered as failed unless it finishes later. */
+async function resolveHostnames($: EngineInterface, hosts: string[]): Promise<Map<string, string | null>> {
+  const unique = [...new Set(hosts)]
+  const out = new Map<string, string | null>()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<void>(resolve => { timer = setTimeout(resolve, lookupDeadlineMs) })
+  try {
+    await Promise.all(unique.map(async h => {
+      const r = await Promise.race([
+        resolveHostname($, h),
+        deadline.then(() => {
+          if (!hostnames.has(h)) hostnames.set(h, { hostname: null, at: clock() })
+          return null
+        }),
+      ])
+      out.set(h, r)
+    }))
+  } finally { clearTimeout(timer) }
+  return out
 }
 
 /** Whether the checkout at `root` is a Swarm2 project: .swarm2/project.yaml at its root, or any git remote in the cached
@@ -99,7 +141,7 @@ async function resolveHostname($: EngineInterface, host: string): Promise<string
  * closed). When no remote matches but one looks like GitHub, warns once per verdict window. Git errors answer false. */
 export async function isSwarm2Checkout($: EngineInterface, root: string): Promise<boolean> {
   const cached = verdicts.get(root)
-  if (cached && Date.now() - cached.at < VERDICT_MS) return cached.registered
+  if (cached && clock() - cached.at < VERDICT_MS) return cached.registered
   let registered = await exists($, `${root === '/' ? '' : root}/.swarm2/project.yaml`)
   if (!registered) {
     let projects: string[] | null = null
@@ -110,8 +152,10 @@ export async function isSwarm2Checkout($: EngineInterface, root: string): Promis
         if (out.exitCode === 0) {
           const repos = parseRemotes(out.stdout)
           const githubLike = [...repos]
-          for (const c of aliasCandidates(out.stdout)) {
-            const resolved = await resolveHostname($, c.host)
+          const candidates = aliasCandidates(out.stdout)
+          const resolvedHosts = await resolveHostnames($, candidates.map(c => c.host))
+          for (const c of candidates) {
+            const resolved = resolvedHosts.get(c.host) ?? null
             if (resolved === null) { repos.push(c.path); githubLike.push(c.path) } // fail closed: it might be GitHub
             else {
               const r = normalizeRemoteWithHost(c.url, resolved)
@@ -126,7 +170,7 @@ export async function isSwarm2Checkout($: EngineInterface, root: string): Promis
       } catch { /* git unavailable: fail open */ }
     }
   }
-  verdicts.set(root, { registered, at: Date.now() })
+  verdicts.set(root, { registered, at: clock() })
   return registered
 }
 

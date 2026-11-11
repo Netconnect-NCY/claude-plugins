@@ -7,7 +7,7 @@ import {
   parseRemotes, projectsFromResult, PROJECTS_TTL_MS, remotesMatch, toolWriteTargets,
 } from '../hooks/guard'
 import type { LocalAuditEntry } from '../hooks/guard'
-import { resetGuardMemory, setGuardWarn } from '../hooks/guard-hook'
+import { resetGuardMemory, setGuardTiming, setGuardWarn } from '../hooks/guard-hook'
 
 const ctx = { cwd: '/repo', home: '/home/u' }
 const writes = (command: string, c = ctx) => bashWriteTargets(command, c)
@@ -159,6 +159,9 @@ type Host = {
   reportFails?: 'status' | 'throw'
   /** `ssh -G <host>` answers: a hostname, 'fail' (exit 1) or 'throw' */
   ssh?: Record<string, string>
+  /** `ssh -G` for these aliases never answers; others wait sshDelayMs first */
+  sshHang?: string[]
+  sshDelayMs?: number
 }
 
 function host(over: Partial<Host> = {}): Host {
@@ -209,6 +212,8 @@ function engine(on: On, h: Host) {
     h.ran.push([...e.argv])
     if (e.argv[0] === 'sh') return { value: { exitCode: 0, stdout: `/home/u\n${h.env ?? ''}`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[0] === 'ssh') {
+      if (h.sshHang?.includes(e.argv[2] ?? '')) return new Promise(() => {}) as never
+      if (h.sshDelayMs) return new Promise(r => setTimeout(() => r({ value: { exitCode: 0, stdout: `hostname gitlab.example.org\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }), h.sshDelayMs)) as never
       const a = h.ssh?.[e.argv[2] ?? ''] ?? 'throw'
       if (a === 'throw') throw new Error('ssh: not found')
       if (a === 'fail') return { value: { exitCode: 1, stdout: '', stderr: 'x', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -429,4 +434,76 @@ test('a failing report never blocks the override', async ($, on) => {
     expect(await outcome($, { tool: 'Bash', command: 'git commit -m x' })).toBe('ran')
     expect((h.store.get('localEditsAudit') as LocalAuditEntry[]).length).toBe(1)
   }
+})
+
+const twoAliases = 'origin\tgit@alias-a:Acme/App.git (fetch)\norigin\tgit@alias-b:Acme/App.git (fetch)\n'
+const sshCalls = (h: Host) => h.ran.filter(a => a[0] === 'ssh').length
+
+test('a successful ssh -G lookup is cached across checkout verdicts; a failed one is retried only after 60 s', async ($, on) => {
+  let t = 1_000_000
+  try {
+    const h = host({ remotes: { '/repo': 'origin\tgit@alias-a:Acme/App.git (fetch)\n' }, ssh: { 'alias-a': 'gitlab.example.org' } })
+    engine(on, h)
+    setGuardTiming({ now: () => t })
+    await start($)
+    const edit = { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }
+    await outcome($, edit)
+    t += 61_000 // verdict expired, lookup cached for good
+    await outcome($, edit)
+    expect(sshCalls(h)).toBe(1)
+
+    const f = host({ remotes: { '/repo': 'origin\tgit@alias-a:Acme/App.git (fetch)\n' }, ssh: { 'alias-a': 'fail' } })
+    engine(on, f)
+    setGuardTiming({ now: () => t })
+    await start($)
+    await outcome($, edit)
+    expect(sshCalls(f)).toBe(1)
+    t += 59_000 // verdict (60 s) still fresh, no lookup
+    await outcome($, edit)
+    expect(sshCalls(f)).toBe(1)
+    t += 2_000 // both expired: retried
+    await outcome($, edit)
+    expect(sshCalls(f)).toBe(2)
+  } finally { setGuardTiming(null) }
+})
+
+test('ssh -G lookups run concurrently and one overall deadline bounds the wall time', async ($, on) => {
+  try {
+    // concurrent: two 150 ms lookups finish in well under 300 ms
+    const h = host({ remotes: { '/repo': twoAliases }, sshDelayMs: 150 })
+    engine(on, h)
+    setGuardTiming({ lookupDeadlineMs: 1000 })
+    await start($)
+    const t0 = Date.now()
+    await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })
+    expect(Date.now() - t0).toBeLessThan(280)
+    expect(sshCalls(h)).toBe(2)
+
+    // hung lookups: the total cap (not per lookup) ends the wait, unresolved fails closed (blocked)
+    const g = host({ remotes: { '/repo': twoAliases }, sshHang: ['alias-a', 'alias-b'] })
+    engine(on, g)
+    setGuardTiming({ lookupDeadlineMs: 200 })
+    await start($)
+    const t1 = Date.now()
+    expect(await outcome($, { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' })).toBe('blocked')
+    const took = Date.now() - t1
+    expect(took).toBeGreaterThanOrEqual(190)
+    expect(took).toBeLessThan(380)
+  } finally { setGuardTiming(null) }
+})
+
+test('a hung ssh -G is not started again when the failed-lookup and verdict TTLs expire', async ($, on) => {
+  let t = 1_000_000
+  try {
+    const h = host({ remotes: { '/repo': 'origin\tgit@alias-a:Acme/App.git (fetch)\n' }, sshHang: ['alias-a'] })
+    engine(on, h)
+    setGuardTiming({ now: () => t, lookupDeadlineMs: 200 })
+    await start($)
+    const edit = { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }
+    expect(await outcome($, edit)).toBe('blocked')
+    expect(sshCalls(h)).toBe(1)
+    t += 61_000 // verdict and failed lookup both expired; the first ssh -G is still pending
+    expect(await outcome($, edit)).toBe('blocked')
+    expect(sshCalls(h)).toBe(1)
+  } finally { setGuardTiming(null) }
 })
