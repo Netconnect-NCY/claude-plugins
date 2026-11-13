@@ -6,7 +6,7 @@ import { configureConnection, setSessionOverride, tokenCandidates } from './conn
 import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, reportGuard, setLocal } from './guard-hook'
 import { setPluginVersion } from './plugin-report'
 import { parseRouting, routingLine } from './routing'
-import type { Account, Attention, Deployment, Feed, Message, ProjectRow, Run, UsageWindow } from '../types'
+import type { Account, Attention, Deployment, Feed, Message, ProjectRow, Run, UsageWindow, WaitingForPaths } from '../types'
 import {
   accountKey, accountToastFor, attentionToasts, visibleAttention, deploymentKey, deploymentPhase, deploymentToastFor, observationLabel, messageToasts, oneLine, runKey,
   TERMINAL, toastFor,
@@ -121,6 +121,12 @@ function accountColor(a: Account): string | undefined {
   return undefined
 }
 
+/** "waiting for paths held by run X": the id and pattern come only when the server showed them; an older server sends the bare reason. */
+export function waitingLine(w: WaitingForPaths | null | undefined): string {
+  if (!w) return 'Waiting for paths held by another run; it starts automatically, do not resubmit'
+  return `Waiting for paths${w.blocking_pattern ? ` ${w.blocking_pattern}` : ''} held by run ${short(w.blocking_run_id)}; it starts automatically, do not resubmit`
+}
+
 function isActive(r: Run): boolean {
   return !TERMINAL.has(r.status) && r.phase !== 'done'
 }
@@ -136,6 +142,7 @@ type StatusRun = {
   run_id: string; repo: string; status: string; status_reason: string | null; provider: string | null; attempt: number | null
   phase: string; updated_at: string; pr_url: string | null; merge_status?: string | null; merge_reason?: string | null
   merge_sha?: string | null; validation_tier?: string | null; quota_resume_at?: string | null
+  waiting_for_paths?: WaitingForPaths | null
 }
 type StatusBody = { runs?: StatusRun[]; deployments?: Deployment[]; messages?: Message[] }
 
@@ -146,7 +153,8 @@ function fromStatus(body: StatusBody): Pick<Feed, 'runs' | 'deployments' | 'atte
     run_id: r.run_id, repo: r.repo, requester: null, mine: true, goal: null, status: r.status, status_reason: r.status_reason,
     provider: r.provider, attempt: r.attempt, phase: r.phase, started_at: null, updated_at: r.updated_at, pr_url: r.pr_url,
     merge_status: r.merge_status ?? null, merge_reason: r.merge_reason ?? null, merge_sha: r.merge_sha ?? null,
-    quota_resume_at: r.quota_resume_at ?? null, validation_tier: r.validation_tier ?? null, workers: [], tokens: null, cost_usd: null,
+    quota_resume_at: r.quota_resume_at ?? null, validation_tier: r.validation_tier ?? null,
+    waiting_for_paths: r.waiting_for_paths ?? null, workers: [], tokens: null, cost_usd: null,
   }))
   const deployments = Array.isArray(body.deployments) ? body.deployments : []
   const attention: Attention[] = [
@@ -448,7 +456,7 @@ export const register: Register = (on, options) => {
     const runDetail = (r: Run, indent: string) => (
       <Box flexDirection="column">
         <Text wrap="truncate-end">
-          {indent}<Text color="magenta">{r.status === 'waiting_quota' ? '⏸' : spin}</Text> {r.mine ? 'you' : (r.requester ?? 'someone')} · {phaseBar(r.phase, false)} {r.phase === 'waiting_quota' ? 'waiting for quota' : r.phase}
+          {indent}<Text color="magenta">{r.status === 'waiting_quota' ? '⏸' : spin}</Text> {r.mine ? 'you' : (r.requester ?? 'someone')} · {phaseBar(r.phase, false)} {r.phase === 'waiting_quota' ? 'waiting for quota' : r.status === 'queued' && r.status_reason === 'waiting_for_paths' ? 'waiting for paths' : r.phase}
           <Text dimColor>
             {' '}{short(r.run_id)}
             {r.started_at ? ` · ${ago(r.started_at)}` : ''}
@@ -466,7 +474,10 @@ export const register: Register = (on, options) => {
             {indent}  {w.model ?? w.vendor} ▸ {w.last_action ?? 'starting'}
           </Text>
         ))}
-        {r.status_reason && <Text color="yellow" wrap="truncate-end">{indent}  {r.status_reason}</Text>}
+        {r.status === 'queued' && r.status_reason === 'waiting_for_paths' && (
+          <Text color="yellow" wrap="truncate-end">{indent}  {waitingLine(r.waiting_for_paths)}</Text>
+        )}
+        {r.status_reason && !(r.status === 'queued' && r.status_reason === 'waiting_for_paths') && <Text color="yellow" wrap="truncate-end">{indent}  {r.status_reason}</Text>}
         {r.pr_url && <Text dimColor wrap="truncate-end">{indent}  {r.pr_url}</Text>}
       </Box>
     )

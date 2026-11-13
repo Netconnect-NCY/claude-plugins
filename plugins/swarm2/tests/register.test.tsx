@@ -211,6 +211,30 @@ test('a control feed without pool or projects keeps the run-based layout', async
   }
 })
 
+test('a run waiting for paths shows the blocking run and says it starts by itself', async ($, on) => {
+  const BLOCKER = '0b1c2d3e-0000-4000-8000-000000000001'
+  const waiting = controlRun({ status: 'queued', status_reason: 'waiting_for_paths', phase: 'queued', workers: [],
+    waiting_for_paths: { blocking_run_id: BLOCKER, blocking_pattern: 'src/auth/**' } })
+  engine(on, { control: { ...CONTROL, runs: [waiting] }, status: { runs: [], deployments: [], messages: [] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /waiting for paths/)
+  await has(ui, /Waiting for paths src\/auth\/\*\* held by run 0b1c2d3e; it starts automatically, do not resubmit/)
+  expect(await ui.find({ type: 'Text', text: /^\s*waiting_for_paths$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an older server without waiting_for_paths still shows a queued waiting run', async ($, on) => {
+  const status = { runs: [statusRun({ status: 'queued', status_reason: 'waiting_for_paths', phase: 'queued' })], deployments: [], messages: [] }
+  engine(on, { control: null, status })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /Waiting for paths held by another run; it starts automatically/)
+  await ui.unmount()
+})
+
 test('an older server falls back to the status feed, messages included', async ($, on) => {
   const status = { runs: [statusRun({ status: 'blocked', status_reason: 'no Claude account', phase: 'queued' })], deployments: [],
     messages: [message(2, 'please review')] }

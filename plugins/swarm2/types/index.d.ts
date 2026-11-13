@@ -44,6 +44,9 @@ export type Account = {
 
 export type EngineWorker = { id: string; vendor: string; model: string | null; last_action: string | null; since: string | null }
 
+/** A queued run waiting for paths held by another run (status_reason waiting_for_paths). */
+export type WaitingForPaths = { blocking_run_id: string; blocking_pattern: string | null }
+
 export type Run = {
   run_id: string
   repo: string
@@ -57,6 +60,8 @@ export type Run = {
   phase: string
   /** Earliest quota retry, null when unknown/hidden or not waiting; absent on older servers. */
   quota_resume_at?: string | null
+  /** Set while a queued run waits for paths held by another run; absent on older servers. */
+  waiting_for_paths?: WaitingForPaths | null
   started_at: string | null
   updated_at: string
   pr_url: string | null
