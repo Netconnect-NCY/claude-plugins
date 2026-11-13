@@ -145,6 +145,36 @@ export type Capacity = {
   models: { model: string; tokens: number }[]
 }
 
+/** One unfinished run in a repository's queue. title and status_reason are redacted like Run.goal (null when hidden);
+ * provider/model/effort are null when the viewer may not see them. Never account labels, billing or costs. */
+export type QueueEntry = {
+  /** 1-based within the repo: active runs first (oldest first), then queued runs in path-wait start order */
+  position: number
+  run_id: string
+  title: string | null
+  /** running | verifying | waiting_quota | the awaiting-approval status as stored | queued */
+  status: string
+  status_reason: string | null
+  requester: string | null
+  /** the viewer requested it */
+  mine: boolean
+  provider: string | null
+  model: string | null
+  effort: string | null
+  /** set for queued runs waiting for paths held by another run */
+  waiting_for_paths: WaitingForPaths | null
+  /** waiting_quota: when it retries; else null */
+  retry_at: string | null
+  /** the run's created_at (age = now - since) */
+  since: string
+}
+
+/** entries is capped at 20; more counts the unfinished runs beyond them */
+export type RepoQueue = { repo: string; entries: QueueEntry[]; more: number }
+
+/** only repos with at least one unfinished run, capped at 10; more_repos counts the rest */
+export type Queue = { repos: RepoQueue[]; more_repos: number }
+
 export type Feed = {
   /** Which feed drew the runs: the control feed, the basic status feed, or none yet. */
   source: 'control' | 'status' | null
@@ -161,6 +191,8 @@ export type Feed = {
   /** Every project of the organisation the viewer is a member of, idle ones included; null on a server older than the
    * projects field, or from the status feed (the pane then lists runs only). */
   projects: ProjectRow[] | null
+  /** Unfinished runs per readable repository (control feed only); absent on older servers (treat as empty). */
+  queue?: Queue
   error: string | null
   checkedAt: string | null
 }

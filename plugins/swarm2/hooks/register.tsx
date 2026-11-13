@@ -5,15 +5,16 @@ import { parseLocalCommand, PLAN_ONLY_REFUSED_MESSAGE, PLAN_ONLY_UNKNOWN_REFUSED
 import { configureConnection, setSessionOverride, tokenCandidates } from './connection'
 import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, reportGuard, setLocal } from './guard-hook'
 import { setPluginVersion } from './plugin-report'
+import { parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
 import { parseRouting, routingLine } from './routing'
-import type { Account, Attention, Deployment, Feed, Message, ProjectRow, Run, UsageWindow, WaitingForPaths } from '../types'
+import type { Account, Attention, Deployment, Feed, Message, ProjectRow, QueueEntry, Run, UsageWindow, WaitingForPaths } from '../types'
 import {
   accountKey, accountToastFor, attentionToasts, visibleAttention, deploymentKey, deploymentPhase, deploymentToastFor, observationLabel, messageToasts, oneLine, runKey,
   TERMINAL, toastFor,
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.5.2'
+export const PLUGIN_VERSION = '0.5.3'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -303,7 +304,7 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
     }
     next = {
       ...EMPTY, ...body, source: 'control', runs: withMergeDetail(body.runs ?? [], statusBody),
-      attention: visibleAttention(body.attention ?? [], body.projects),
+      attention: visibleAttention(body.attention ?? [], body.projects), queue: parseQueue(body.queue),
       messages: statusBody ? (Array.isArray(statusBody.messages) ? statusBody.messages : []) : lastMessages,
       error: null, checkedAt,
     }
@@ -400,6 +401,8 @@ export const register: Register = (on, options) => {
     const mine = f.runs.filter(isActive)
     const finished = f.runs.filter(r => !isActive(r)).slice(0, 5)
     const messages = (f.messages ?? []).slice(0, SHOWN_MESSAGES)
+    // parsed again: a value stored by an earlier build is not trusted either
+    const queue = parseQueue(f.queue)
 
     const heading = (title: string, extra?: string) => (
       <Text weight="bold" color="cyan">
@@ -520,6 +523,28 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    /** One queue line: position, status, who, title, requested routing, age; then what it waits for, dim. */
+    const queueRow = (q: QueueEntry) => {
+      const s = queueStatus(q)
+      const routing = queueRouting(q)
+      const title = queueTitle(q.title)
+      const waits = q.waiting_for_paths
+        ? `waits for run ${short(q.waiting_for_paths.blocking_run_id)}${q.waiting_for_paths.blocking_pattern ? ` · ${q.waiting_for_paths.blocking_pattern}` : ''}`
+        : q.status === 'waiting_quota' ? (q.retry_at ? `retries ${clock(q.retry_at)}` : 'automatic retry pending')
+        : q.status_reason && q.status_reason !== 'waiting_for_paths' ? q.status_reason : null
+      return (
+        <Box flexDirection="column">
+          <Text wrap="truncate-end">
+            {'  '}<Text dimColor>{q.position}</Text> <Text color={q.status === 'queued' ? 'yellow' : 'magenta'}>{s.glyph} {s.word}</Text>
+            {' · '}{q.mine ? <Text weight="bold">you</Text> : (q.requester ?? 'someone')}
+            {title ? ` · “${title}”` : ''}
+            <Text dimColor>{routing ? ` · ${routing}` : ''} · {ago(q.since)}</Text>
+          </Text>
+          {waits && <Text dimColor wrap="truncate-end">{'     '}{waits}</Text>}
+        </Box>
+      )
+    }
+
     const waitingCount = mine.filter(r => r.status === 'waiting_quota').length
     const executingCount = mine.length - waitingCount
     const runCounts = [executingCount ? `${executingCount} running` : '', waitingCount ? `${waitingCount} waiting for quota` : ''].filter(Boolean).join(' · ')
@@ -584,6 +609,18 @@ export const register: Register = (on, options) => {
             </Text>
           </Text>
         ))}
+
+        {queue.repos.map(r => (
+          <Box flexDirection="column">
+            <Text> </Text>
+            <Text weight="bold" color="cyan" wrap="truncate-end">
+              {r.repo} queue
+              {r.more > 0 ? <Text dimColor> +{r.more} more</Text> : null}
+            </Text>
+            {r.entries.map(queueRow)}
+          </Box>
+        ))}
+        {queue.more_repos > 0 && <Text dimColor wrap="truncate-end">+{queue.more_repos} more repo{queue.more_repos === 1 ? '' : 's'}</Text>}
 
         {f.others.length > 0 && <Text> </Text>}
         {f.others.length > 0 && heading('OTHERS')}

@@ -780,7 +780,7 @@ test('the plugin reports version and guard state at session start, once per wind
   engine(on, h)
   await start($)
   await settle(h, 1)
-  expect(h.reports).toEqual([{ auth: 'Bearer s2s_test', body: { client: 'claude-code', plugin_version: '0.5.2', guard: 'on', session: 'sess-1' } }])
+  expect(h.reports).toEqual([{ auth: 'Bearer s2s_test', body: { client: 'claude-code', plugin_version: '0.5.3', guard: 'on', session: 'sess-1' } }])
   for (let i = 0; i < 3; i++) await outcome($, { tool: 'Read', file_path: '/repo/src/a.ts' })
   await command($, 'swarm2')
   await settle(h, 2)
