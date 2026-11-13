@@ -3,7 +3,15 @@
 // `/me/control` it is mapped onto the same shape (accounts, others, capacity, pool and projects then stay empty).
 
 /** `_quota` is one persistent account cooldown: null percentage, scheduling retry in resets_at. */
-export type UsageWindow = { name: string; used_pct: number | null; resets_at: string | null }
+export type UsageWindow = {
+  name: string
+  used_pct: number | null
+  resets_at: string | null
+  /** True when resets_at has passed: used_pct is then null (the figure no longer holds). Absent for live windows and on older servers. */
+  expired?: boolean
+  /** When this window was measured; absent on older servers. */
+  observed_at?: string | null
+}
 
 export type Account = {
   id: string
@@ -25,6 +33,10 @@ export type Account = {
   notified_at?: string | null
   windows: UsageWindow[]
   observed_at: string | null
+  /** Whether a usage measurement exists for this provider/kind; absent on older servers. */
+  measurement?: 'measured' | 'not_measurable'
+  /** True when the newest measurement is older than 6 hours; absent on older servers. */
+  stale?: boolean
   in_use: number
   engine_workers: number
   users: { name: string; count: number }[]

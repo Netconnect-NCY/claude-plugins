@@ -563,3 +563,38 @@ test('the control feed projects are cached with role and plan_only (plan_only ab
   expect(c.repos).toEqual(['acme/legacy', 'acme/plan'])
   expect(c.meta).toEqual({ 'acme/plan': { role: 'developer', plan_only: true }, 'acme/legacy': { role: 'owner', plan_only: false } })
 })
+
+// ---- usage figures that stopped being true ----
+
+async function paneHas(ui: Parameters<typeof has>[0], text: RegExp, present = true) {
+  expect(Boolean(await ui.find({ type: 'Text', text }))).toBe(present)
+}
+
+test('expired window, stale account, not-measured and no-figure-yet strings; an old server without the new fields still renders', async ($, on) => {
+  const ago3h = new Date(Date.now() - 3 * 3_600_000).toISOString()
+  const base = CONTROL.accounts[0]!
+  const control = {
+    ...CONTROL,
+    accounts: [
+      { ...base, id: 'e1', label: 'Expired', windows: [{ name: '5h', used_pct: null, resets_at: ago3h, expired: true, observed_at: ago3h }, { name: '7d', used_pct: 61, resets_at: null }] },
+      { ...base, id: 'e2', label: 'Stale one', stale: true, observed_at: ago3h, windows: [{ name: 'primary', used_pct: 20, resets_at: null }] },
+      { ...base, id: 'e3', label: 'Deep', provider: 'deepseek', kind: 'api_key', measurement: 'not_measurable', windows: [] },
+      { ...base, id: 'e4', label: 'Fresh', measurement: 'measured', windows: [] },
+      { ...base, id: 'e5', label: 'Old server', windows: [] },
+      { ...base, id: 'e6', label: 'No time', observed_at: null, windows: [{ name: '7d', used_pct: null, resets_at: ago3h, expired: true }] },
+    ],
+  }
+  engine(on, { control, status: { runs: [], deployments: [], messages: [] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /5h last measured 3h00 ago/)
+  await has(ui, /7d expired/)
+  await paneHas(ui, /5h ▓|5h \?/, false)
+  await has(ui, /7d .* 61%/)
+  await has(ui, /stale/)
+  await has(ui, /primary window/)
+  await has(ui, /usage not measured for this provider/)
+  expect((await ui.findAll({ type: 'Text', text: /no usage figure yet/ })).length).toBe(2)
+  await ui.unmount()
+})

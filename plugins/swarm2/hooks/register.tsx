@@ -13,7 +13,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.5.1'
+export const PLUGIN_VERSION = '0.5.2'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -109,6 +109,8 @@ function tokens(n: number): string {
 
 function windowLabel(w: UsageWindow): string {
   if (w.name === '_quota') return 'quota cooldown'
+  if (w.name === 'primary') return 'primary window'
+  if (w.name === 'secondary') return 'secondary window'
   return w.name.replace(/^five_hour$|^5h$/, '5h').replace(/^seven_day$|^7d$/, '7d')
 }
 
@@ -407,18 +409,21 @@ export const register: Register = (on, options) => {
 
     const accountRow = (a: Account) => (
       <Box flexDirection="column">
-        <Text wrap="truncate-end">
+        <Text wrap="truncate-end" dimColor={a.stale === true}>
           <Text color={accountColor(a)}>● </Text>
           <Text weight="semibold">{a.label ?? a.provider}</Text>
           {isPool(a) && <Text dimColor> ({a.owner.replace(/^pool · /, '')})</Text>}
+          {a.stale === true && <Text dimColor> stale</Text>}
           {a.in_use > 0 && (
             <Text color="magenta"> {spin} ⚙×{a.engine_workers || a.in_use}</Text>
           )}
         </Text>
-        <Text wrap="truncate-end">
+        <Text wrap="truncate-end" dimColor={a.stale === true}>
           {'  '}
-          {a.windows.length === 0 && <Text dimColor>no usage figure yet</Text>}
-          {a.windows.map(w => (
+          {a.windows.length === 0 && <Text dimColor>{a.measurement === 'not_measurable' ? 'usage not measured for this provider' : 'no usage figure yet'}</Text>}
+          {a.windows.map(w => w.expired === true ? (
+            <Text dimColor>{windowLabel(w)} {(w.observed_at ?? a.observed_at) ? `last measured ${ago(w.observed_at ?? a.observed_at)} ago` : 'expired'}{'  '}</Text>
+          ) : (
             <Text color={(w.used_pct ?? 0) >= 90 ? 'red' : (w.used_pct ?? 0) >= 80 ? 'yellow' : undefined}>
               {windowLabel(w)} {w.name === '_quota' ? '' : w.used_pct === null ? '?' : `${pctBar(w.used_pct)} ${Math.round(w.used_pct)}%`}
               {w.resets_at ? (w.name === '_quota' ? `until ${w.resets_at}` : ` ↻${clock(w.resets_at)}`) : ''}{'  '}
