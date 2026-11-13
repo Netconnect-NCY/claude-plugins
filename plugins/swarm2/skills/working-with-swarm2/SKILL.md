@@ -98,6 +98,7 @@ The pool supports all seven AI providers and exactly these `CREDENTIAL_OPTIONS` 
 | `deepseek` | `api_key` |
 | `kimi` | `api_key` |
 | `anthropic_compatible` | `api_key` |
+| `qwen` | `api_key` (Alibaba Model Studio Token Plan; config `{region, model}`, defaults `ap-southeast-1` / `qwen3.8-max`; separate from `anthropic_compatible`; web page only) |
 | `xai` | `api_key` |
 | `gemini` | `api_key`, `subscription_token` (Google AI Pro login file `~/.gemini/oauth_creds.json`; web page only, never chat or `swarm_credentials_set`) |
 
