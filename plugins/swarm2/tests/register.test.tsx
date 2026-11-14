@@ -622,3 +622,22 @@ test('expired window, stale account, not-measured and no-figure-yet strings; an 
   expect((await ui.findAll({ type: 'Text', text: /no usage figure yet/ })).length).toBe(2)
   await ui.unmount()
 })
+
+test('cost: a run shows tokens and API-equivalent cost (~ when partial, cost unknown when null), today shows unknown not $0.00, the label is the footnote', async ($, on) => {
+  const label = 'API-equivalent at list price — subscriptions are not billed per token'
+  const control = {
+    ...CONTROL,
+    runs: [controlRun({ tokens: 12_000, cost_usd: 1.5, cost_partial: true, cost_label: label }), controlRun({ run_id: '99999999-aaaa-4aaa-8aaa-aaaaaaaaaaaa', goal: 'other', tokens: 500, cost_usd: null, cost_partial: null, cost_label: label })],
+    capacity: { ...CONTROL.capacity, today_total: { tokens: 15_000, cost_usd: null, unknown_cost_executions: 2, partial: true, cost_label: label } },
+  }
+  engine(on, { control, status: { runs: [statusRun()], deployments: [], messages: [] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /12k tok · ~\$1\.50 API-eq/)
+  await has(ui, /500 tok · cost unknown/)
+  await has(ui, /today unknown · 15k tok/)
+  await paneHas(ui, /today \$0\.00/, false)
+  await has(ui, /Costs: API-equivalent at list price/)
+  await ui.unmount()
+})

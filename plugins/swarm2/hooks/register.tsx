@@ -5,6 +5,7 @@ import { parseLocalCommand, PLAN_ONLY_REFUSED_MESSAGE, PLAN_ONLY_UNKNOWN_REFUSED
 import { configureConnection, setSessionOverride, tokenCandidates } from './connection'
 import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, reportGuard, setLocal } from './guard-hook'
 import { setPluginVersion } from './plugin-report'
+import { costFootnote, runCostText, todayCostText } from './cost'
 import { parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
 import { autopilotRowLabel, autopilotStatusPart } from './autopilot'
 import { parseRouting, routingLine } from './routing'
@@ -404,6 +405,8 @@ export const register: Register = (on, options) => {
     const mine = f.runs.filter(isActive)
     const finished = f.runs.filter(r => !isActive(r)).slice(0, 5)
     const messages = (f.messages ?? []).slice(0, SHOWN_MESSAGES)
+    // the server's cost label is the footnote; an older server sends none, so the footnote is left out
+    const costNote = costFootnote(f.capacity?.today_total?.cost_label ?? f.runs.find(r => r.cost_label)?.cost_label)
     // parsed again: a value stored by an earlier build is not trusted either
     const queue = parseQueue(f.queue)
 
@@ -469,7 +472,7 @@ export const register: Register = (on, options) => {
             {r.provider ? ` · ${r.provider}` : ''}
             {r.attempt && r.attempt > 1 ? ` #${r.attempt}` : ''}
             {r.validation_tier ? ` · tests ${r.validation_tier}` : ''}
-            {r.cost_usd !== null ? ` · ${money(r.cost_usd)}` : ''}
+            {runCostText(r) ? ` · ${runCostText(r)}` : ''}
           </Text>
         </Text>
         {r.status === 'waiting_quota' && <Text color="yellow" wrap="truncate-end">{indent}  {r.quota_resume_at ? `Earliest automatic retry ${r.quota_resume_at}` : 'Automatic retry pending'}</Text>}
@@ -672,6 +675,9 @@ export const register: Register = (on, options) => {
             {f.capacity.pods !== null ? ` · ${f.capacity.pods} pods` : ''}
           </Text>
         )}
+        {f.capacity && todayCostText(f.capacity.today_total) && (
+          <Text dimColor wrap="wrap">{todayCostText(f.capacity.today_total)}</Text>
+        )}
         {f.capacity && f.capacity.today.length > 0 && (
           <Text dimColor wrap="wrap">
             today: {f.capacity.today.map(t => `${t.name} ${money(t.cost_usd)}`).join(' · ')}
@@ -679,6 +685,7 @@ export const register: Register = (on, options) => {
           </Text>
         )}
 
+        {costNote && <Text dimColor wrap="wrap">Costs: {costNote}.</Text>}
         <Text> </Text>
         <Text dimColor color={stale ? 'yellow' : undefined}>
           {f.checkedAt ? `${stale ? 'stale · ' : ''}updated ${clock(f.checkedAt)}` : 'connecting…'}

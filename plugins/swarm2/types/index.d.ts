@@ -74,7 +74,12 @@ export type Run = {
   validation_tier: string | null
   workers: EngineWorker[]
   tokens: number | null
+  /** API-equivalent USD at list price; null = unknown (never 0 for unknown). */
   cost_usd: number | null
+  /** True when some execution's cost is unknown, so cost_usd is a partial sum. Absent on older servers. */
+  cost_partial?: boolean | null
+  /** The server's cost label (API-equivalent at list price). Absent on older servers. */
+  cost_label?: string | null
   /** Latest routing decision; null before the first decision, absent on older servers. */
   routing?: RunRouting | null
 }
@@ -147,6 +152,8 @@ export type Capacity = {
   pods: number | null
   today: { name: string; tokens: number; cost_usd: number }[]
   models: { model: string; tokens: number }[]
+  /** Status-line total of today. Absent on older servers. cost_usd null = unknown. */
+  today_total?: { tokens: number | null; cost_usd: number | null; unknown_cost_executions?: number; partial?: boolean; cost_label?: string } | null
 }
 
 /** One unfinished run in a repository's queue. title and status_reason are redacted like Run.goal (null when hidden);
