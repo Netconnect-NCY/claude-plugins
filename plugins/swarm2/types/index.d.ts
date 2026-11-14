@@ -101,6 +101,10 @@ export type ProjectRow = {
   repo: string; role: string; capabilities?: string[]; active_runs: number; members: ProjectMember[]; more_members: number
   /** pending invites: a number only when the viewer owns the project; null or absent otherwise */
   pending_invites?: number | null
+  /** Autopilot on (auto-merge + automatic prod deploy + controller repair_merge); absent on older servers (treat as off) */
+  autopilot?: boolean
+  /** Autopilot on, but one of its three settings was changed individually since; absent on older servers (treat as false) */
+  autopilot_drifted?: boolean
 }
 
 export type Other = { name: string; active_runs: number; models: Record<string, number> }

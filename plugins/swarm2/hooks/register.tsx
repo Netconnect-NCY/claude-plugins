@@ -6,6 +6,7 @@ import { configureConnection, setSessionOverride, tokenCandidates } from './conn
 import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, reportGuard, setLocal } from './guard-hook'
 import { setPluginVersion } from './plugin-report'
 import { parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
+import { autopilotRowLabel, autopilotStatusPart } from './autopilot'
 import { parseRouting, routingLine } from './routing'
 import type { Account, Attention, Deployment, Feed, Message, ProjectRow, QueueEntry, Run, UsageWindow, WaitingForPaths } from '../types'
 import {
@@ -234,6 +235,8 @@ function statusLine(f: Feed, env = '', local = false): string | undefined {
   if (f.attention.length) parts.push(`${f.attention.length} need you`)
   if (tight && active) parts.push(`${tight.a.provider} ${windowLabel(tight.w)} ${Math.round(tight.w.used_pct ?? 0)}%`)
   if (local) parts.push('local edits ON')
+  const autopilot = autopilotStatusPart(f.projects)
+  if (autopilot) parts.push(autopilot)
   return parts.length ? `swarm2${env ? ` ${env}` : ''} · ${parts.join(' · ')}` : undefined
 }
 
@@ -502,6 +505,7 @@ export const register: Register = (on, options) => {
           <Text color={p.active_runs > 0 ? 'magenta' : undefined} dimColor={p.active_runs === 0}>{p.active_runs > 0 ? spin : '·'} </Text>
           <Text weight="semibold">{p.repo}</Text>
           <Text dimColor> {p.role} · {p.active_runs > 0 ? `${p.active_runs} running` : 'idle'}</Text>
+          {autopilotRowLabel(p) && <Text color="yellow"> · {autopilotRowLabel(p)}</Text>}
         </Text>
         {(p.members.length > 0 || p.more_members > 0 || (p.pending_invites ?? 0) > 0) && (
           <Text wrap="truncate-end">
