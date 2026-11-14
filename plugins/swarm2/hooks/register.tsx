@@ -9,6 +9,7 @@ import { costFootnote, runCostText, todayCostText } from './cost'
 import { parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
 import { autopilotRowLabel, autopilotStatusPart } from './autopilot'
 import { parseRouting, routingLine } from './routing'
+import { isDefaultSetting, parseSettings, settingLine, settingsStatusParts } from './settings'
 import type { Account, Attention, Deployment, Feed, Message, ProjectRow, QueueEntry, Run, UsageWindow, WaitingForPaths } from '../types'
 import {
   accountKey, accountToastFor, attentionToasts, visibleAttention, deploymentKey, deploymentPhase, deploymentToastFor, observationLabel, messageToasts, oneLine, runKey,
@@ -47,6 +48,8 @@ const feed = atom({ plugin: 'swarm2', key: 'feed' } as const, EMPTY, { shape: 'f
 const frame = atom({ plugin: 'swarm2', key: 'frame' } as const, 0)
 // the session's /swarm2-local override (written by guard-hook.ts through $.state under the same key)
 const localEdits = atom({ plugin: 'swarm2', key: 'localEdits' } as const, false)
+// the repos whose Settings section is expanded (each starts collapsed)
+const settingsOpen = atom({ plugin: 'swarm2', key: 'settingsOpen' } as const, [] as string[])
 
 // The module's own memory of what it has shown; it starts over on reload, which only costs a missed toast.
 const seenRuns = new Map<string, string>()
@@ -238,6 +241,7 @@ function statusLine(f: Feed, env = '', local = false): string | undefined {
   if (local) parts.push('local edits ON')
   const autopilot = autopilotStatusPart(f.projects)
   if (autopilot) parts.push(autopilot)
+  parts.push(...settingsStatusParts(f.projects))
   return parts.length ? `swarm2${env ? ` ${env}` : ''} · ${parts.join(' · ')}` : undefined
 }
 
@@ -396,8 +400,10 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const f = await read($, feed)
+    const open = await read($, settingsOpen)
+    const opened = new Set(Array.isArray(open) ? open : [])
     const local = (await read($, localEdits)) || isEnvOverride()
     const spin = FRAMES[(await read($, frame)) % FRAMES.length]
     const cols = e.props.bodyColumns
@@ -502,6 +508,35 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    /** The project's effective settings: one pressable line, collapsed; expanded, one line per setting (how to change it dim, cut
+     * at the pane's edge). An older server sends none: nothing is drawn. */
+    const settingsBlock = (p: ProjectRow) => {
+      const settings = parseSettings(p.settings)
+      if (!settings.length) return null
+      const expanded = opened.has(p.repo)
+      const toggle = () => void update($, settingsOpen, list => {
+        const rest = (Array.isArray(list) ? list : []).filter(r => r !== p.repo)
+        return expanded ? rest : [...rest, p.repo]
+      })
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            <Text>{'    '}</Text>
+            <Button key={`settings:${p.repo}`} plain dimColor onPress={toggle}>
+              {expanded ? '▾' : '▸'} Settings <Text dimColor>({settings.length})</Text>
+            </Button>
+          </Box>
+          {expanded && settings.map(s => (
+            <Text wrap="truncate-end">
+              {'      '}{settingLine(s)}
+              {isDefaultSetting(s) && <Text dimColor> (default)</Text>}
+              {s.how_to_change && <Text dimColor> · {s.how_to_change}</Text>}
+            </Text>
+          ))}
+        </Box>
+      )
+    }
+
     const repoBlock = (p: ProjectRow) => (
       <Box flexDirection="column">
         <Text wrap="truncate-end">
@@ -527,6 +562,7 @@ export const register: Register = (on, options) => {
           </Text>
         )}
         {mine.filter(r => r.repo === p.repo).map(r => runDetail(r, '    '))}
+        {settingsBlock(p)}
       </Box>
     )
 

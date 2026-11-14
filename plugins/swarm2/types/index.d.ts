@@ -110,6 +110,14 @@ export type ProjectRow = {
   autopilot?: boolean
   /** Autopilot on, but one of its three settings was changed individually since; absent on older servers (treat as false) */
   autopilot_drifted?: boolean
+  /** the project's effective settings for this viewer, read-only, in a fixed order; absent on older servers (hooks/settings.ts) */
+  settings?: SettingEntry[]
+}
+
+/** One effective project setting (docs/contracts/control-feed.d.ts): value === default means the default is in effect. */
+export type SettingEntry = {
+  key: string; label: string; value: string | number | boolean | null; default: string | number | boolean | null
+  source: 'project' | 'org' | 'user' | 'server default'; how_to_change: string
 }
 
 export type Other = { name: string; active_runs: number; models: Record<string, number> }
@@ -210,6 +218,6 @@ export type Feed = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'swarm2': { feed: Shaped<Feed>; frame: number; localEdits: boolean }
+    'swarm2': { feed: Shaped<Feed>; frame: number; localEdits: boolean; settingsOpen: string[] }
   }
 }
