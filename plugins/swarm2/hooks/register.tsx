@@ -19,7 +19,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.51'
+export const PLUGIN_VERSION = '0.6.52'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -35,6 +35,10 @@ const SPIN_MS = 120
 const STALE_MS = 30_000
 // an older server has no /me/control yet: try it again this often
 const CONTROL_RETRY_MS = 5 * 60_000
+// After a transient control-feed failure, the last full feed is shown (marked "reconnecting…") for this long.
+const CONTROL_GRACE_MS = 2 * 60_000
+let lastControl: Feed | null = null
+let lastControlAt = 0
 const PHASES = ['queued', 'preparing', 'executing', 'verifying', 'pushing', 'publishing', 'merging', 'done']
 const DEPLOY_DONE = new Set(['succeeded', 'failed', 'cancelled'])
 const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
@@ -328,6 +332,17 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
       messages: statusBody ? (Array.isArray(statusBody.messages) ? statusBody.messages : []) : lastMessages,
       error: null, checkedAt,
     }
+  } else if (statusBody && control && control.status !== 404 && control.status !== 403
+    && lastControl && Date.now() - lastControlAt < CONTROL_GRACE_MS) {
+    // A transient control-feed failure (a deploy rolling the api pods, a slow answer, a network blip): keep the last full
+    // control feed for a short grace period instead of dropping to the basic status feed, which hides accounts, queue and
+    // projects. Runs and messages still come from the fresh status feed.
+    next = {
+      ...lastControl, runs: withMergeDetail(lastControl.runs, statusBody),
+      messages: Array.isArray(statusBody.messages) ? statusBody.messages : lastControl.messages,
+      error: `reconnecting… (control feed ${control.status ? `HTTP ${control.status}` : 'unreachable'}; showing data from ${Math.round((Date.now() - lastControlAt) / 1000)} s ago)`,
+      checkedAt,
+    }
   } else if (statusBody) {
     const controlFailed = control && control.status !== 404 && control.status !== 403
     next = {
@@ -335,12 +350,17 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
       error: controlFailed ? `Swarm2 control feed ${control?.status ? `answered HTTP ${control?.status}` : 'unreachable'}` : null,
       checkedAt,
     }
+  } else if (lastControl && Date.now() - lastControlAt < CONTROL_GRACE_MS) {
+    // Both feeds failed for a moment (typically the api pods rolling during a deploy): keep the last full feed, marked.
+    const failed = control && control.status !== 404 && control.status !== 403 ? control : status
+    next = { ...lastControl, error: `reconnecting… (Swarm2 ${failed.status ? `HTTP ${failed.status}` : 'unreachable'}; showing data from ${Math.round((Date.now() - lastControlAt) / 1000)} s ago)`, checkedAt }
   } else {
     const failed = control && control.status !== 404 && control.status !== 403 ? control : status
     await fail($, failed.status ? `Swarm2 answered HTTP ${failed.status}` : 'Swarm2 unreachable')
     return
   }
   lastMessages = next.messages
+  if (next.source === 'control' && next.error === null) { lastControl = next; lastControlAt = Date.now() }
   toastChanges($, next, statusBody !== null)
   await update($, feed, () => next)
   $.ui.status(statusLine(next, environmentLabel(base).name, await isLocalOn($)))
