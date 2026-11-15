@@ -20,6 +20,9 @@ Already installed? `/plugin update swarm2` fetches the current version (needed f
 
 Plugin **0.6.x** targets `https://swarm2-mcp.netconnect.ro`, the only deployed environment. Service dev was decommissioned on 2026-11-08. Its `baseUrl` setting supplies `${user_config.baseUrl}/mcp` and the pane URL. Target repositories still support dev/prod deployment APIs.
 
+**Keep it updated automatically.** Claude Code turns auto-update OFF by default for third-party marketplaces such as `netconnect`, so a new plugin version is not installed until you update it. Turn it on once: `/plugin` → **Marketplaces** → `netconnect` → **Enable auto-update** (Claude Code then checks a few minutes after a session starts and asks for `/reload-plugins`). Update now with `claude plugin update swarm2@netconnect`. Every catalog sync publishes a higher version (`0.6.<n>`), and the pane footer shows the version you run. Repositories can turn it on for everyone who opens them with `extraKnownMarketplaces.netconnect.autoUpdate: true` in `.claude/settings.json` (as this repository does).
+
+
 If the marketplace is unavailable, add the MCP server manually instead:
 
 ```bash
