@@ -23,3 +23,9 @@ test('the line says requested, not applied, and copes with a missing model', () 
   expect(routingLine({ difficulty: 2, classification_source: null, provider: null, model: null, effort: null, why: '', reasons: [] }))
     .toBe('d2 → provider default requested')
 })
+
+test('the balance reason in why reaches the routing line', () => {
+  const parsed = parseRouting({ ...good, why: 'lowest expected cost; balanced', balance: { band: 8, gap: 60, reach: 8, reason: 'balanced' } })!
+  expect(parsed.why).toBe('lowest expected cost; balanced')
+  expect(routingLine(parsed).endsWith('; balanced')).toBe(true)
+})
