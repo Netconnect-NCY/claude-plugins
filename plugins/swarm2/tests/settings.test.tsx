@@ -180,3 +180,67 @@ test('every surface draws the collapsed Settings line', async ($, on) => {
     await ui.unmount()
   }
 })
+
+// The server's effective values that differ from the project's own setting (an organisation kill switch, the organisation's shard
+// maximum, auto-merge implying auto PR) carry project_value / blocked_by / note; older servers send none of them.
+const KILL = 'organisation kill switch'
+const OVERRIDDEN = [
+  setting('auto_pr', 'Auto PR', true, false, { project_value: false, note: 'implied by auto-merge' }),
+  setting('auto_merge', 'Auto merge', true, false),
+  setting('auto_prod_deploy', 'Auto prod deploy', false, false,
+    { source: 'org', project_value: true, blocked_by: KILL, note: `blocked by the ${KILL}; project setting: on` }),
+  setting('controller_mode', 'Controller', 'off', 'off',
+    { source: 'org', project_value: 'repair', blocked_by: KILL, note: `blocked by the ${KILL}; project setting: repair` }),
+  setting('shards', 'Verifier shards', 4, 1,
+    { source: 'org', project_value: 8, note: 'clamped to the organisation maximum 4; project setting: 8' }),
+]
+
+test('parseSettings keeps project_value, blocked_by and note when well-formed and drops them otherwise', () => {
+  const [autoPr, , autoProd] = parseSettings(OVERRIDDEN)
+  expect(autoPr).toMatchObject({ project_value: false, note: 'implied by auto-merge' })
+  expect(autoProd).toMatchObject({ project_value: true, blocked_by: KILL })
+  const bad = parseSettings([setting('a', 'A', 1, 1, { project_value: { x: 1 }, blocked_by: 5, note: '' })])[0]!
+  expect('project_value' in bad || 'blocked_by' in bad || 'note' in bad).toBe(false)
+  expect(parseSettings(SETTINGS).some(s => 'project_value' in s || 'blocked_by' in s || 'note' in s)).toBe(false)
+})
+
+test('a blocked, clamped or implied value is never "(default)" and its line says why', () => {
+  const s = new Map(parseSettings(OVERRIDDEN).map(e => [e.key, e]))
+  expect(settingLine(s.get('auto_prod_deploy')!)).toBe(`Auto prod deploy: off (blocked by the ${KILL}; project setting: on)`)
+  expect(isDefaultSetting(s.get('auto_prod_deploy')!)).toBe(false)
+  expect(settingLine(s.get('controller_mode')!)).toBe(`Controller: off (blocked by the ${KILL}; project setting: repair)`)
+  expect(isDefaultSetting(s.get('controller_mode')!)).toBe(false)
+  expect(settingLine(s.get('auto_pr')!)).toBe('Auto PR: on (implied by auto-merge)')
+  expect(settingLine(s.get('shards')!)).toBe('Verifier shards: 4 (clamped to the organisation maximum 4; project setting: 8)')
+  // blocked_by without a note still explains itself; an unblocked off is still the default
+  expect(settingLine({ ...s.get('auto_prod_deploy')!, note: undefined })).toBe(`Auto prod deploy: off (blocked by the ${KILL}; project setting: on)`)
+  expect(isDefaultSetting({ value: false, default: false })).toBe(true)
+  expect(isDefaultSetting({ value: false, default: false, project_value: false })).toBe(true)
+})
+
+test('the expanded pane draws the reason and no (default) for blocked settings', async ($, on) => {
+  engine(on, [project('acme/app', OVERRIDDEN)])
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'settings:acme/app' })
+  const lines = await texts(ui)
+  const line = (label: RegExp) => lines.find(t => label.test(t) && /: /.test(t)) ?? ''
+  expect(line(/Auto prod deploy: off \(blocked by the organisation kill switch; project setting: on\)/)).not.toMatch(/\(default\)/)
+  expect(line(/Controller: off \(blocked by the organisation kill switch; project setting: repair\)/)).not.toMatch(/\(default\)/)
+  expect(line(/Auto PR: on \(implied by auto-merge\)/)).not.toMatch(/\(default\)/)
+  expect(line(/Verifier shards: 4 \(clamped to the organisation maximum 4/)).not.toMatch(/\(default\)/)
+  await ui.unmount()
+})
+
+test('with Autopilot on, a project shows only the autopilot badge, not auto-merge / auto deploy', async ($, on) => {
+  const all = SETTINGS.map(s => s.key === 'auto_merge' || s.key === 'auto_prod_deploy' ? { ...s, value: true } : s)
+  expect(settingsStatusParts([{ ...project('acme/app', all), autopilot: true }])).toEqual([])
+  expect(settingsStatusParts([{ ...project('acme/app', all), autopilot: true }, project('acme/web', all)]))
+    .toEqual(['auto-merge ON acme/web', 'auto deploy ON acme/web'])
+  const statuses: (string | undefined)[] = []
+  engine(on, [{ ...project('acme/app', all), autopilot: true }], statuses)
+  await start($)
+  const last = statuses.filter(Boolean).at(-1) ?? ''
+  expect(last).toMatch(/autopilot ON acme\/app/)
+  expect(last).not.toMatch(/auto-merge|auto deploy/)
+})
