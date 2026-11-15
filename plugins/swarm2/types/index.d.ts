@@ -216,6 +216,8 @@ export type Feed = {
   projects: ProjectRow[] | null
   /** Unfinished runs per readable repository (control feed only); absent on older servers (treat as empty). */
   queue?: Queue
+  /** Latest published plugin version known to the server; absent or null when unknown. */
+  plugin_latest?: string | null
   error: string | null
   checkedAt: string | null
 }

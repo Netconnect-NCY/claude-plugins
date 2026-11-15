@@ -12,12 +12,12 @@ import { parseRouting, routingLine } from './routing'
 import { isDefaultSetting, parseSettings, settingLine, settingsStatusParts } from './settings'
 import type { Account, Attention, ConflictRisk, Deployment, Feed, Message, ProjectRow, QueueEntry, Run, UsageWindow, WaitingForPaths } from '../types'
 import {
-  accountKey, accountToastFor, attentionToasts, visibleAttention, deploymentKey, deploymentPhase, deploymentToastFor, observationLabel, messageToasts, oneLine, runKey,
+  accountKey, accountToastFor, attentionToasts, visibleAttention, outdatedLatest, deploymentKey, deploymentPhase, deploymentToastFor, observationLabel, messageToasts, oneLine, runKey,
   TERMINAL, toastFor,
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.48'
+export const PLUGIN_VERSION = '0.6.49'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -319,7 +319,10 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
     }
     next = {
       ...EMPTY, ...body, source: 'control', runs: withMergeDetail(body.runs ?? [], statusBody),
-      attention: visibleAttention(body.attention ?? [], body.projects), queue: parseQueue(body.queue),
+      // The server compares the newest report of ANY of this user's sessions; this pane knows its own version, so an
+      // up-to-date pane never shows the outdated item (another, older session or a lagging replica made it flap).
+      attention: visibleAttention(body.attention ?? [], body.projects)
+        .filter(a => a.kind !== 'plugin_outdated' || outdatedLatest(PLUGIN_VERSION, body.plugin_latest) !== null), queue: parseQueue(body.queue),
       messages: statusBody ? (Array.isArray(statusBody.messages) ? statusBody.messages : []) : lastMessages,
       error: null, checkedAt,
     }
@@ -415,6 +418,7 @@ export const register: Register = (on, options) => {
     const spin = FRAMES[(await read($, frame)) % FRAMES.length]
     const cols = e.props.bodyColumns
     const stale = f.checkedAt !== null && Date.now() - new Date(f.checkedAt).getTime() > STALE_MS
+    const newest = outdatedLatest(PLUGIN_VERSION, f.plugin_latest)
     const mine = f.runs.filter(isActive)
     const finished = f.runs.filter(r => !isActive(r)).slice(0, 5)
     const messages = (f.messages ?? []).slice(0, SHOWN_MESSAGES)
@@ -639,7 +643,7 @@ export const register: Register = (on, options) => {
         {f.attention.length > 0 && <Text> </Text>}
         {f.attention.length > 0 && heading('NEEDS YOU')}
         {f.attention.map(n => (
-          <Text color={n.kind === 'notice' ? 'yellow' : n.kind.endsWith('blocked') ? 'red' : 'yellow'} wrap="wrap">
+          <Text color={n.kind === 'notice' || n.kind === 'plugin_outdated' ? 'yellow' : n.kind.endsWith('blocked') ? 'red' : 'yellow'} wrap="wrap">
             ! {n.text}{n.url ? ` ${n.url}` : ''}
           </Text>
         ))}
@@ -737,6 +741,7 @@ export const register: Register = (on, options) => {
           {f.checkedAt ? `${stale ? 'stale · ' : ''}updated ${clock(f.checkedAt)}` : 'connecting…'}
           {f.source === 'status' ? ' · basic feed' : ''}
           {` · plugin v${PLUGIN_VERSION}`}
+          {newest ? <Text color="yellow">{` (latest v${newest})`}</Text> : ''}
         </Text>
       </Box>
     )

@@ -165,7 +165,7 @@ export function attentionKey(item: Attention): string {
 /** seen null before the first load (records only); each new item of a kind no other rule covers toasts once. */
 export function attentionToasts(seen: ReadonlySet<string> | null, items: Attention[]): { toasts: string[]; seen: Set<string> } {
   // Remember identified invalid transitions across temporary disappearance (bounded account list or role changes).
-  const retained = [...(seen ?? [])].filter(key => key.startsWith('["account_invalid",') || key.startsWith('["notice",'))
+  const retained = [...(seen ?? [])].filter(key => key.startsWith('["account_invalid",') || key.startsWith('["notice",') || key.startsWith('["plugin_outdated",'))
   const next = new Set([...retained, ...items.map(attentionKey)])
   for (const key of next) {
     if (next.size <= 1000) break
@@ -180,4 +180,17 @@ export function attentionToasts(seen: ReadonlySet<string> | null, items: Attenti
     return true
   }).map(n => n.kind === 'notice' ? `Swarm2: ${n.text}` : `Swarm2 needs you: ${n.text}`)
   return { toasts, seen: next }
+}
+
+function semver(v: unknown): [number, number, number] | null {
+  const m = typeof v === 'string' ? /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(v.trim()) : null
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+}
+
+/** The latest published version when `own` is semver-lower than it; null when equal, newer or either one is malformed. */
+export function outdatedLatest(own: unknown, latest: unknown): string | null {
+  const a = semver(own), b = semver(latest)
+  if (!a || !b) return null
+  for (let i = 0; i < 3; i++) if (a[i]! !== b[i]!) return a[i]! < b[i]! ? String(latest).trim().replace(/^v/, '') : null
+  return null
 }

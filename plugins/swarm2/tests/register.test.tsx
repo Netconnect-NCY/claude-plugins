@@ -641,3 +641,40 @@ test('cost: a run shows tokens and API-equivalent cost (~ when partial, cost unk
   await has(ui, /Costs: API-equivalent at list price/)
   await ui.unmount()
 })
+
+async function footer(latest: unknown, attention: unknown[] = []) {
+  return { ...CONTROL, runs: [], attention, deployments: [], ...(latest === undefined ? {} : { plugin_latest: latest }) }
+}
+
+test('the footer shows the latest version only when the plugin is older', async ($, on) => {
+  const server: Server = { control: await footer('99.0.0'), status: { runs: [], deployments: [], messages: [] } }
+  engine(on, server)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /\(latest v99\.0\.0\)/)
+  await ui.unmount()
+})
+
+for (const latest of ['0.0.1', '0.6.0', 'banana', null, undefined]) {
+  test(`no latest-version suffix for plugin_latest ${String(latest)}`, async ($, on) => {
+    engine(on, { control: await footer(latest), status: { runs: [], deployments: [], messages: [] } })
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await command($, 'swarm2')
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await has(ui, /plugin v/)
+    expect(await ui.find({ type: 'Text', text: /\(latest v/ })).toBeFalsy()
+    await ui.unmount()
+  })
+}
+
+test('a plugin_outdated attention item shows its text with the update command', async ($, on) => {
+  const text = 'Swarm2 plugin v0.5.3 is out of date (latest v0.6.47). Update: claude plugin update swarm2@netconnect, then /reload-plugins.'
+  engine(on, { control: await footer('0.6.47', [{ kind: 'plugin_outdated', id: 'plugin_outdated', text, url: null }]), status: { runs: [], deployments: [], messages: [] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /NEEDS YOU/)
+  await has(ui, /claude plugin update swarm2@netconnect/)
+  await ui.unmount()
+})
