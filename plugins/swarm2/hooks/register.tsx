@@ -5,6 +5,7 @@ import { parseLocalCommand, PLAN_ONLY_REFUSED_MESSAGE, PLAN_ONLY_UNKNOWN_REFUSED
 import { configureConnection, setSessionOverride, tokenCandidates } from './connection'
 import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, reportGuard, setLocal } from './guard-hook'
 import { setPluginVersion } from './plugin-report'
+import { accountUsersLabel } from './account-users'
 import { costFootnote, runCostText, todayCostText } from './cost'
 import { parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
 import { autopilotRowLabel, autopilotStatusPart } from './autopilot'
@@ -17,7 +18,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.49'
+export const PLUGIN_VERSION = '0.6.50'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -449,7 +450,7 @@ export const register: Register = (on, options) => {
           {isPool(a) && <Text dimColor> ({a.owner.replace(/^pool · /, '')})</Text>}
           {a.stale === true && <Text dimColor> stale</Text>}
           {a.in_use > 0 && (
-            <Text color="magenta"> {spin} ⚙×{a.engine_workers || a.in_use}</Text>
+            <Text color="magenta"> {spin} ⚙×{a.engine_workers || a.in_use}{accountUsersLabel(a.users) ? ` · ${accountUsersLabel(a.users)}` : ''}</Text>
           )}
         </Text>
         <Text wrap="truncate-end" dimColor={a.stale === true}>
@@ -471,9 +472,6 @@ export const register: Register = (on, options) => {
             {'  ↯ '}{a.last_error ?? a.health}{a.health_since ? ` since ${ago(a.health_since)}` : ''}
             {a.attention ? ' — replace the credential to repair' : ''}
           </Text>
-        )}
-        {a.users.length > 0 && (
-          <Text dimColor wrap="truncate-end">  used by {a.users.map(u => `${u.name}×${u.count}`).join(', ')}</Text>
         )}
       </Box>
     )
