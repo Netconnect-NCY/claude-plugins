@@ -6,6 +6,7 @@ import { configureConnection, setSessionOverride, tokenCandidates } from './conn
 import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, reportGuard, setLocal } from './guard-hook'
 import { setPluginVersion } from './plugin-report'
 import { accountUsersLabel } from './account-users'
+import { cooldownProgress, durationLeft, nextFixedReset } from './window-status'
 import { costFootnote, runCostText, todayCostText } from './cost'
 import { parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
 import { autopilotRowLabel, autopilotStatusPart } from './autopilot'
@@ -18,7 +19,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.50'
+export const PLUGIN_VERSION = '0.6.51'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -457,11 +458,19 @@ export const register: Register = (on, options) => {
           {'  '}
           {a.windows.length === 0 && <Text dimColor>{a.measurement === 'not_measurable' ? 'usage not measured for this provider' : 'no usage figure yet'}</Text>}
           {a.windows.map(w => w.expired === true ? (
-            <Text dimColor>{windowLabel(w)} {(w.observed_at ?? a.observed_at) ? `last measured ${ago(w.observed_at ?? a.observed_at)} ago` : 'expired'}{'  '}</Text>
+            // The window has reset since it was measured: its quota is full again. A fixed (daily/weekly) window shows
+            // its next reset; a 5 h window starts again on the next use.
+            <Text color="green">{windowLabel(w)} ✓ reset{(() => { const next = nextFixedReset(w.name, w.resets_at, Date.now()); return next ? ` · next ↻${clock(next)}` : '' })()}{'  '}</Text>
+          ) : w.name === '_quota' ? (
+            // Cooldown: a blue bar that fills as it runs out, the time left and when it ends.
+            <Text color="blue">{(() => {
+              const c = cooldownProgress(a.health_since, w.resets_at, Date.now())
+              return c ? `cooldown ${c.bar ? `${c.bar} ` : ''}${c.left} left ↻${clock(w.resets_at)}` : `cooldown ↻${clock(w.resets_at)}`
+            })()}{'  '}</Text>
           ) : (
             <Text color={(w.used_pct ?? 0) >= 90 ? 'red' : (w.used_pct ?? 0) >= 80 ? 'yellow' : undefined}>
               {windowLabel(w)} {w.name === '_quota' ? '' : w.used_pct === null ? '?' : `${pctBar(w.used_pct)} ${Math.round(w.used_pct)}%`}
-              {w.resets_at ? (w.name === '_quota' ? `until ${w.resets_at}` : ` ↻${clock(w.resets_at)}`) : ''}{'  '}
+              {w.resets_at ? ` ↻${clock(w.resets_at)}${(w.used_pct ?? 0) >= 90 ? ` (in ${durationLeft(Date.parse(w.resets_at) - Date.now()) || 'now'})` : ''}` : ''}{'  '}
             </Text>
           ))}
           {a.health !== 'ok' && a.health !== 'unknown' && <Text color="red">{a.health} </Text>}
