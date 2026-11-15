@@ -18,7 +18,7 @@ Run these commands in Claude Code:
 
 Already installed? `/plugin update swarm2` fetches the current version (needed for [plan-only projects](#plan-only-client-gate)).
 
-Plugin **0.5.3** targets `https://swarm2-mcp.netconnect.ro`, the only deployed environment. Service dev was decommissioned on 2026-11-08. Its `baseUrl` setting supplies `${user_config.baseUrl}/mcp` and the pane URL. Target repositories still support dev/prod deployment APIs.
+Plugin **0.6.x** targets `https://swarm2-mcp.netconnect.ro`, the only deployed environment. Service dev was decommissioned on 2026-11-08. Its `baseUrl` setting supplies `${user_config.baseUrl}/mcp` and the pane URL. Target repositories still support dev/prod deployment APIs.
 
 If the marketplace is unavailable, add the MCP server manually instead:
 
@@ -77,7 +77,7 @@ What you need as a non-owner member of a plan_only project:
 3. The guard on: no `/swarm2-local on` and no `SWARM2_LOCAL_EDITS` in the session.
 4. A recent report: the plugin sends one when the session starts, then at most every 5 minutes while the session works (tool calls, pane polls), and at once when the guard state changes. The server counts a report as recent for 15 minutes by default.
 
-**The report.** `POST {baseUrl}/me/plugin/report` with the status token, body `{"client":"claude-code","plugin_version":"0.5.3","guard":"on"|"off","session":"<session id>"}` (the session id only when it matches `[\w-]{1,100}`). `guard` is `"off"` while `/swarm2-local on` or `SWARM2_LOCAL_EDITS` is in effect, so **turning the override on makes Swarm2 refuse your calls on plan_only projects you do not own** (from the next report, sent at once); `/swarm2-local off` reports `"on"` again. The report is best-effort: in the background, a 4 s timeout, retried after 30 s when it fails; it never blocks or fails a session, an edit or a tool call. It carries nothing else and the token is never logged or shown (code: `hooks/plugin-report.ts`, `hooks/connection.ts`).
+**The report.** `POST {baseUrl}/me/plugin/report` with the status token, body `{"client":"claude-code","plugin_version":"0.6.x","guard":"on"|"off","session":"<session id>"}` (the session id only when it matches `[\w-]{1,100}`). `guard` is `"off"` while `/swarm2-local on` or `SWARM2_LOCAL_EDITS` is in effect, so **turning the override on makes Swarm2 refuse your calls on plan_only projects you do not own** (from the next report, sent at once); `/swarm2-local off` reports `"on"` again. The report is best-effort: in the background, a 4 s timeout, retried after 30 s when it fails; it never blocks or fails a session, an edit or a tool call. It carries nothing else and the token is never logged or shown (code: `hooks/plugin-report.ts`, `hooks/connection.ts`).
 
 **Not a security boundary.** The client name (MCP `initialize` `clientInfo.name`) and the report are both self-declared by the client: anyone can send them on purpose, and other tools or a plain `git push` are not stopped. The gate keeps honest clients on the plan-only workflow; it does not enforce it.
 
