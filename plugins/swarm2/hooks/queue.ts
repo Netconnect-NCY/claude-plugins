@@ -1,4 +1,4 @@
-import type { Queue, QueueEntry, RepoQueue, WaitingForPaths } from '../types'
+import type { ConflictRisk, Queue, QueueEntry, RepoQueue, WaitingForPaths } from '../types'
 
 export const QUEUE_MAX_REPOS = 10
 export const QUEUE_MAX_ENTRIES = 20
@@ -13,7 +13,17 @@ const record = (v: unknown): Record<string, unknown> | null =>
 function paths(value: unknown): WaitingForPaths | null {
   const v = record(value)
   const id = text(v?.blocking_run_id, 64)
-  return v && id ? { blocking_run_id: id, blocking_pattern: text(v.blocking_pattern, 512) } : null
+  return v && id ? { blocking_run_id: id, blocking_pattern: text(v.blocking_pattern, 512), ...riskOf(v.conflict_risk) } : null
+}
+
+/** A well-formed conflict_risk (score 0..100, band, up to 4 short reasons), else nothing: older servers omit it. */
+export function riskOf(value: unknown): { conflict_risk?: ConflictRisk } {
+  const r = record(value)
+  const band = r?.band === 'low' || r?.band === 'medium' || r?.band === 'high' ? r.band : null
+  const score = r?.score
+  if (!r || !band || typeof score !== 'number' || !Number.isInteger(score) || score < 0 || score > 100) return {}
+  const reasons = Array.isArray(r.reasons) ? r.reasons.filter((x): x is string => typeof x === 'string').slice(0, 4).map(x => x.slice(0, 300)) : []
+  return { conflict_risk: { score, band, reasons } }
 }
 
 function entry(value: unknown): QueueEntry | null {

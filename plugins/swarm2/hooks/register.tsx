@@ -10,7 +10,7 @@ import { parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
 import { autopilotRowLabel, autopilotStatusPart } from './autopilot'
 import { parseRouting, routingLine } from './routing'
 import { isDefaultSetting, parseSettings, settingLine, settingsStatusParts } from './settings'
-import type { Account, Attention, Deployment, Feed, Message, ProjectRow, QueueEntry, Run, UsageWindow, WaitingForPaths } from '../types'
+import type { Account, Attention, ConflictRisk, Deployment, Feed, Message, ProjectRow, QueueEntry, Run, UsageWindow, WaitingForPaths } from '../types'
 import {
   accountKey, accountToastFor, attentionToasts, visibleAttention, deploymentKey, deploymentPhase, deploymentToastFor, observationLabel, messageToasts, oneLine, runKey,
   TERMINAL, toastFor,
@@ -130,7 +130,14 @@ function accountColor(a: Account): string | undefined {
 /** "waiting for paths held by run X": the id and pattern come only when the server showed them; an older server sends the bare reason. */
 export function waitingLine(w: WaitingForPaths | null | undefined): string {
   if (!w) return 'Waiting for paths held by another run; it starts automatically, do not resubmit'
-  return `Waiting for paths${w.blocking_pattern ? ` ${w.blocking_pattern}` : ''} held by run ${short(w.blocking_run_id)}; it starts automatically, do not resubmit`
+  return `Waiting for paths${w.blocking_pattern ? ` ${w.blocking_pattern}` : ''} held by run ${short(w.blocking_run_id)}${riskText(w.conflict_risk, 'waits')}; it starts automatically, do not resubmit`
+}
+
+/** " · waits: risk 86/100 high — <first reason>" (or "parallel"): why auto mode waited or started next to another run. */
+export function riskText(risk: ConflictRisk | null | undefined, decision: 'waits' | 'parallel'): string {
+  if (!risk || typeof risk.score !== 'number') return ''
+  const why = Array.isArray(risk.reasons) && typeof risk.reasons[0] === 'string' ? ` — ${risk.reasons[0].replace(/\s*\(run [0-9a-f-]{8}[0-9a-f-]*,?/i, ' (').slice(0, 90)}` : ''
+  return ` · ${decision}: risk ${risk.score}/100 ${risk.band}${why}`
 }
 
 function isActive(r: Run): boolean {
@@ -492,6 +499,9 @@ export const register: Register = (on, options) => {
         {r.status === 'queued' && r.status_reason === 'waiting_for_paths' && (
           <Text color="yellow" wrap="truncate-end">{indent}  {waitingLine(r.waiting_for_paths)}</Text>
         )}
+        {r.status !== 'queued' && r.parallel_risk && (
+          <Text color="cyan" wrap="truncate-end">{indent}  ↔ started next to another run{riskText(r.parallel_risk, 'parallel')}</Text>
+        )}
         {r.status_reason && !(r.status === 'queued' && r.status_reason === 'waiting_for_paths') && <Text color="yellow" wrap="truncate-end">{indent}  {r.status_reason}</Text>}
         {r.pr_url && <Text dimColor wrap="truncate-end">{indent}  {r.pr_url}</Text>}
       </Box>
@@ -572,7 +582,7 @@ export const register: Register = (on, options) => {
       const routing = queueRouting(q)
       const title = queueTitle(q.title)
       const waits = q.waiting_for_paths
-        ? `waits for run ${short(q.waiting_for_paths.blocking_run_id)}${q.waiting_for_paths.blocking_pattern ? ` · ${q.waiting_for_paths.blocking_pattern}` : ''}`
+        ? `waits for run ${short(q.waiting_for_paths.blocking_run_id)}${q.waiting_for_paths.blocking_pattern ? ` · ${q.waiting_for_paths.blocking_pattern}` : ''}${riskText(q.waiting_for_paths.conflict_risk, 'waits')}`
         : q.status === 'waiting_quota' ? (q.retry_at ? `retries ${clock(q.retry_at)}` : 'automatic retry pending')
         : q.status_reason && q.status_reason !== 'waiting_for_paths' ? q.status_reason : null
       return (

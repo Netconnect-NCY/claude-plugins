@@ -45,7 +45,9 @@ export type Account = {
 export type EngineWorker = { id: string; vendor: string; model: string | null; last_action: string | null; since: string | null }
 
 /** A queued run waiting for paths held by another run (status_reason waiting_for_paths). */
-export type WaitingForPaths = { blocking_run_id: string; blocking_pattern: string | null }
+/** Path-conflict rebase risk (auto mode): score 0..100, band and short reasons; an older server omits it. */
+export type ConflictRisk = { score: number; band: 'low' | 'medium' | 'high'; reasons: string[] }
+export type WaitingForPaths = { blocking_run_id: string; blocking_pattern: string | null; conflict_risk?: ConflictRisk }
 
 export type Run = {
   run_id: string
@@ -62,6 +64,8 @@ export type Run = {
   quota_resume_at?: string | null
   /** Set while a queued run waits for paths held by another run; absent on older servers. */
   waiting_for_paths?: WaitingForPaths | null
+  /** The rebase risk with which auto/parallel conflict mode let this run start next to another run; an older server omits it. */
+  parallel_risk?: ConflictRisk
   started_at: string | null
   updated_at: string
   pr_url: string | null
