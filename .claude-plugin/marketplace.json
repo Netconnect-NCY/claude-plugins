@@ -6,7 +6,7 @@
     "url": "https://github.com/Netconnect-NCY"
   },
   "metadata": {
-    "description": "NetConnect's Claude Code plugins — opinionated tooling for building, deploying, and operating NCI services."
+    "description": "NetConnect's Claude Code plugins \u2014 opinionated tooling for building, deploying, and operating NCI services."
   },
   "plugins": [
     {
@@ -79,6 +79,21 @@
         "mcp",
         "agents",
         "control-pane"
+      ]
+    },
+    {
+      "name": "sunday",
+      "source": "./plugins/sunday",
+      "description": "The Sunday (sunday.work) MCP connection: tickets, projects, reports, leaves, overtime and evaluations from your AI. Install, authenticate, sign in with your NetConnect account; you act as yourself with your own Sunday rights. Works in Claude Code, Claude Desktop and Codex.",
+      "homepage": "https://sunday.work/how-tickets-work",
+      "category": "productivity",
+      "tags": [
+        "nci",
+        "mcp",
+        "sunday",
+        "keycloak",
+        "sso",
+        "tickets"
       ]
     }
   ]

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "sunday": {
+      "type": "http",
+      "url": "https://sunday.work/api/v1/mcp/rpc",
+      "oauth": {
+        "clientId": "sunday-mcp"
+      }
+    }
+  }
+}
