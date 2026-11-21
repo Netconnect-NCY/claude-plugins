@@ -216,6 +216,10 @@ Owner decision 2026-11-21: full CI on the exact head, run on the project's runne
 - `swarm_merge_record` with `emergency_bypass:{reason}` is owner-only and audited. Never suggest or request it to get past a red or missing CI.
 - **Deploy with `swarm_deploy_request`** after a verified merge (production still needs owner approval via the returned link). Never deploy by other means.
 
+### Delivery mode
+
+Each project has a `delivery_mode` (Settings feed entry `delivery_mode`; owner sets it with `swarm_project_delivery_set`). In `direct` (the default), after green full CI you merge through Swarm2 and request the deploy with `swarm_deploy_request` (or the owner's automatic prod deploy runs). `preview_ai` and `staging` are coming; until then they behave as `direct`.
+
 ## 6. Diagnose calls
 
 When a call misbehaves, read its trace instead of guessing: `swarm_audit_trace({since,until,tool?,limit?})` (ISO `since`/`until` required; newest first; follow a non-null `next_cursor`, never send null) returns your own calls with `result`, `error_code`, `duration_ms`, `request_id` and redacted, bounded arguments (8 KiB) and response summary (2 KiB). Pass `user` only as a current organisation owner/admin; project ownership grants nothing, and unauthenticated calls are not attributed to anyone. Full redacted request/response bodies exist only while the human has enabled debug capture (1 h, 24 h or custom, at most 7 days) on `/me/audit` or `/me/org/audit`, and are kept 14 days (traces 365 days). No MCP tool enables it. If a result carries `_meta.debug_tracing` (or `error.data._meta.debug_tracing`), tell the human that debug capture is active until `until`. Do not put secrets in arguments: stored text is redacted best-effort. Example: `{"since":"2026-11-08T13:00:00Z","until":"2026-11-08T14:00:00Z","tool":"swarm_run_get","limit":20}`. Details: [MCP call traces](../../../../docs/MCP-TRACING.md).
