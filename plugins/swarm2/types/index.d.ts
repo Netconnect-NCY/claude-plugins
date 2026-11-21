@@ -166,6 +166,8 @@ export type Capacity = {
   models: { model: string; tokens: number }[]
   /** Status-line total of today. Absent on older servers. cost_usd null = unknown. */
   today_total?: { tokens: number | null; cost_usd: number | null; unknown_cost_executions?: number; partial?: boolean; cost_label?: string } | null
+  /** Token baseline per accepted deliverable (P50/P90). Absent unless the server sends it; the pane then points to swarm_cost_report. */
+  per_deliverable?: { deliverables: number; noncached_input: { p50: number | null; p90: number | null }; output: { p50: number | null; p90: number | null }; attempts: { p50: number | null; p90: number | null }; failed_work_tokens?: number | null } | null
 }
 
 /** One unfinished run in a repository's queue. title and status_reason are redacted like Run.goal (null when hidden);

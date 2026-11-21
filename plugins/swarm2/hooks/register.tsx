@@ -7,7 +7,7 @@ import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, r
 import { setPluginVersion } from './plugin-report'
 import { accountUsersLabel } from './account-users'
 import { cooldownProgress, durationLeft, nextFixedReset } from './window-status'
-import { costFootnote, runCostText, todayCostText } from './cost'
+import { baselineText, costFootnote, runCostText, todayCostText } from './cost'
 import { parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
 import { autopilotRowLabel, autopilotStatusPart } from './autopilot'
 import { parseRouting, routingLine } from './routing'
@@ -19,7 +19,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.53'
+export const PLUGIN_VERSION = '0.6.54'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -761,6 +761,7 @@ export const register: Register = (on, options) => {
             {f.capacity.models.length ? ` · ${f.capacity.models.map(m => `${m.model} ${tokens(m.tokens)} tok`).join(' · ')}` : ''}
           </Text>
         )}
+        {f.capacity && <Text dimColor wrap="wrap">{baselineText(f.capacity.per_deliverable)}</Text>}
 
         {costNote && <Text dimColor wrap="wrap">Costs: {costNote}.</Text>}
         <Text> </Text>

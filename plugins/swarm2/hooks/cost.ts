@@ -35,3 +35,17 @@ export function todayCostText(t: TodayCostFields | null | undefined): string | n
 export function costFootnote(label: string | null | undefined): string | null {
   return typeof label === 'string' && label.trim() ? oneLine(label, 200) : null
 }
+
+export type BaselinePct = { p50: number | null; p90: number | null }
+/** The compact per_deliverable summary (swarm_cost_report view per_deliverable). Absent unless the server sends it. */
+export type TokenBaselineFields = { deliverables: number; noncached_input: BaselinePct; output: BaselinePct; attempts: BaselinePct; failed_work_tokens?: number | null }
+
+const pctText = (p: BaselinePct): string => p.p50 === null || p.p90 === null ? 'n/a' : `${tokenCount(p.p50)}/${tokenCount(p.p90)}`
+
+/** 'per deliverable (n=N) P50/P90: noncached A/B · output C/D · attempts E/F · failed work G tok'; without data a pointer to the tool view. */
+export function baselineText(b: TokenBaselineFields | null | undefined): string {
+  if (!b) return 'token baseline: swarm_cost_report view per_deliverable'
+  if (b.deliverables === 0) return 'per deliverable: none in the window'
+  const failed = b.failed_work_tokens == null ? '' : ` · failed work ${tokenCount(b.failed_work_tokens)} tok`
+  return `per deliverable (n=${b.deliverables}) P50/P90: noncached ${pctText(b.noncached_input)} · output ${pctText(b.output)} · attempts ${pctText(b.attempts)}${failed}`
+}
