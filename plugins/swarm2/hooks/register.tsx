@@ -22,7 +22,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.57'
+export const PLUGIN_VERSION = '0.6.58'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
