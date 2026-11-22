@@ -12,14 +12,17 @@ import { parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
 import { autopilotRowLabel, autopilotStatusPart } from './autopilot'
 import { parseRouting, routingLine } from './routing'
 import { isDefaultSetting, parseSettings, settingLine, settingsStatusParts } from './settings'
-import type { Account, Attention, ConflictRisk, Deployment, Feed, Message, ProjectRow, QueueEntry, Run, UsageWindow, WaitingForPaths } from '../types'
+import type {
+  Account, Attention, ConflictRisk, ControlSpeed, ControlSpeedProject, ControlSpeedRun, ControlSpeedStage, ControlSpeedWait, Deployment, Feed,
+  Message, ProjectRow, QueueEntry, Run, UsageWindow, WaitingForPaths,
+} from '../types'
 import {
   accountKey, accountToastFor, attentionToasts, visibleAttention, outdatedLatest, deploymentKey, deploymentPhase, deploymentToastFor, observationLabel, messageToasts, oneLine, runKey,
   TERMINAL, toastFor,
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.56'
+export const PLUGIN_VERSION = '0.6.57'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -46,7 +49,7 @@ const SHOWN_MESSAGES = 5
 
 const EMPTY: Feed = {
   source: null, accounts: [], runs: [], others: [], attention: [], deployments: [], messages: [], capacity: null, pool: null,
-  projects: null, error: null, checkedAt: null,
+  projects: null, speed: null, error: null, checkedAt: null,
 }
 // 'feed-1' was the runs/deployments/messages feed of the earlier pane and 'feed-2' the control feed before pool and projects:
 // a value stored under either is read as EMPTY.
@@ -144,6 +147,97 @@ export function riskText(risk: ConflictRisk | null | undefined, decision: 'waits
   if (!risk || typeof risk.score !== 'number') return ''
   const why = Array.isArray(risk.reasons) && typeof risk.reasons[0] === 'string' ? ` — ${risk.reasons[0].replace(/\s*\(run [0-9a-f-]{8}[0-9a-f-]*,?/i, ' (').slice(0, 90)}` : ''
   return ` · ${decision}: risk ${risk.score}/100 ${risk.band}${why}`
+}
+
+const SPEED_MAX = 5
+const speedText = (v: unknown, max: number): string | null => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max) || null : null)
+const seconds = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null)
+const speedRecord = (v: unknown): Record<string, unknown> | null =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+/** Only absolute http(s) links are drawn; anything else is dropped. */
+const link = (v: unknown): string | null => {
+  const s = speedText(v, 500)
+  return s && /^https?:\/\/\S+$/.test(s) ? s : null
+}
+const list = <T,>(v: unknown, one: (x: unknown) => T | null, max = SPEED_MAX): T[] =>
+  Array.isArray(v) ? v.flatMap(x => { const y = one(x); return y ? [y] : [] }).slice(0, max) : []
+
+function speedStage(value: unknown): ControlSpeedStage | null {
+  const v = speedRecord(value)
+  const stage = speedText(v?.stage, 60)
+  const count = seconds(v?.count)
+  const p50 = seconds(v?.p50)
+  const p90 = seconds(v?.p90)
+  return stage && count && p50 !== null && p90 !== null ? { stage, count, p50, p90 } : null
+}
+
+function speedRun(value: unknown): ControlSpeedRun | null {
+  const v = speedRecord(value)
+  const run_id = speedText(v?.run_id, 64)
+  const repo = speedText(v?.repo, 200)
+  const total = seconds(v?.total_seconds)
+  const url = link(v?.url)
+  if (!v || !run_id || !repo || total === null || !url) return null
+  const d = speedRecord(v.deploy)
+  const status = speedText(d?.status, 40)
+  return {
+    run_id, repo, outcome: speedText(v.outcome, 40) ?? 'unknown', total_seconds: total, stages: list(v.stages, speedStage, 20),
+    deploy: d && status ? { seconds: seconds(d.seconds), status, environment: speedText(d.environment, 60) } : null, url,
+  }
+}
+
+function speedWait(value: unknown): ControlSpeedWait | null {
+  const v = speedRecord(value)
+  const stage = speedText(v?.stage, 60)
+  const secs = seconds(v?.seconds)
+  const repo = speedText(v?.repo, 200)
+  const url = link(v?.url)
+  if (!v || !stage || secs === null || !repo || !url) return null
+  const own = v.own === true
+  // another user's wait never carries a run id, whatever the server sent
+  return { stage, seconds: secs, repo, own, run_id: own ? speedText(v.run_id, 64) : null, url }
+}
+
+function speedProject(value: unknown): ControlSpeedProject | null {
+  const v = speedRecord(value)
+  const project_id = speedText(v?.project_id, 64)
+  const repo = speedText(v?.repo, 200)
+  const runs = seconds(v?.runs)
+  const p50 = seconds(v?.p50)
+  const p90 = seconds(v?.p90)
+  const url = link(v?.url)
+  return project_id && repo && runs !== null && p50 !== null && p90 !== null && url ? { project_id, repo, runs, p50, p90, url } : null
+}
+
+/** Validates the untrusted, optional `speed` of the control feed. An older server omits it and anything malformed reads as null
+ * (nothing drawn); a malformed run, wait or project is dropped alone. Bounded like the server's own caps. */
+export function parseSpeed(value: unknown): ControlSpeed | null {
+  const v = speedRecord(value)
+  const days = seconds(v?.window_days)
+  if (!v || !days) return null
+  const a = speedRecord(v.aggregate)
+  const aggregateRuns = seconds(a?.runs)
+  return {
+    window_days: days, since: speedText(v.since, 40) ?? '', until: speedText(v.until, 40) ?? '',
+    runs: list(v.runs, speedRun),
+    aggregate: a && aggregateRuns !== null ? { runs: aggregateRuns, stages: list(a.stages, speedStage, 20), url: link(a.url) } : null,
+    top_waits: list(v.top_waits, speedWait),
+    slow_projects: list(v.slow_projects, speedProject),
+    org_url: link(v.org_url),
+  }
+}
+
+/** "45s", "12m", "1h05": a stage or run duration. */
+export function duration(s: number): string {
+  if (s < 60) return `${Math.round(s)}s`
+  if (s < 3600) return `${Math.round(s / 60)}m`
+  return `${Math.floor(s / 3600)}h${two(Math.round((s % 3600) / 60))}`
+}
+
+/** The slowest stages first (by p50), at most `n`: "executing 12m · verifying 3m", or p50/p90 for an aggregate. */
+export function stagesText(stages: ControlSpeedStage[], n: number, spread: boolean): string {
+  return [...stages].sort((x, y) => y.p50 - x.p50).slice(0, n)
+    .map(s => spread ? `${s.stage} ${duration(s.p50)}/${duration(s.p90)}` : `${s.stage} ${duration(s.p50)}`).join(' · ')
 }
 
 function isActive(r: Run): boolean {
@@ -329,6 +423,8 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
       // up-to-date pane never shows the outdated item (another, older session or a lagging replica made it flap).
       attention: visibleAttention(body.attention ?? [], body.projects)
         .filter(a => a.kind !== 'plugin_outdated' || outdatedLatest(PLUGIN_VERSION, body.plugin_latest) !== null), queue: parseQueue(body.queue),
+      // absent on older servers, null when telemetry is unavailable; anything malformed reads as null too
+      speed: parseSpeed(body.speed),
       messages: statusBody ? (Array.isArray(statusBody.messages) ? statusBody.messages : []) : lastMessages,
       error: null, checkedAt,
     }
@@ -448,6 +544,8 @@ export const register: Register = (on, options) => {
     const costNote = costFootnote(f.capacity?.today_total?.cost_label ?? f.runs.find(r => r.cost_label)?.cost_label)
     // parsed again: a value stored by an earlier build is not trusted either
     const queue = parseQueue(f.queue)
+    const speed = parseSpeed(f.speed)
+    const speedEmpty = !speed || (!speed.runs.length && !speed.aggregate?.stages.length && !speed.top_waits.length && !speed.slow_projects.length)
 
     const heading = (title: string, extra?: string) => (
       <Text weight="bold" color="cyan">
@@ -732,6 +830,54 @@ export const register: Register = (on, options) => {
             </Text>
           </Text>
         ))}
+
+        {speed && <Text> </Text>}
+        {speed && heading('SPEED', `last ${speed.window_days} d`)}
+        {speed && speedEmpty && <Text dimColor wrap="wrap">No timing data in the last {speed.window_days} days.</Text>}
+        {speed && speed.runs.map(r => (
+          <Box flexDirection="column">
+            <Text wrap="truncate-end">
+              <Text color={r.outcome === 'succeeded' ? 'green' : r.outcome === 'failed' ? 'red' : 'yellow'}>
+                {r.outcome === 'succeeded' ? '✓' : r.outcome === 'failed' ? '✗' : '•'}{' '}
+              </Text>
+              {r.repo} {duration(r.total_seconds)}
+              <Text dimColor>
+                {' '}{short(r.run_id)}
+                {r.stages.length ? ` · ${stagesText(r.stages, 3, false)}` : ''}
+                {r.deploy ? ` · deploy ${r.deploy.seconds === null ? '?' : duration(r.deploy.seconds)} ${r.deploy.status}${r.deploy.environment ? ` (${r.deploy.environment})` : ''}` : ''}
+                {` ${r.url}`}
+              </Text>
+            </Text>
+          </Box>
+        ))}
+        {speed?.aggregate && speed.aggregate.stages.length > 0 && (
+          <Text wrap="truncate-end">
+            all {speed.aggregate.runs} run{speed.aggregate.runs === 1 ? '' : 's'} p50/p90
+            <Text dimColor>
+              {' · '}{stagesText(speed.aggregate.stages, 4, true)}
+              {speed.aggregate.url ? ` ${speed.aggregate.url}` : ''}
+            </Text>
+          </Text>
+        )}
+        {speed && speed.top_waits.map(w => (
+          <Text wrap="truncate-end">
+            <Text color="yellow">⧗ </Text>
+            {w.stage} {duration(w.seconds)}
+            <Text dimColor>
+              {' '}{w.repo} · {w.own ? `you${w.run_id ? ` ${short(w.run_id)}` : ''}` : 'another run'} {w.url}
+            </Text>
+          </Text>
+        ))}
+        {speed && speed.slow_projects.map(p => (
+          <Text wrap="truncate-end">
+            <Text color="magenta">◷ </Text>
+            {p.repo}
+            <Text dimColor>
+              {' '}{p.runs} run{p.runs === 1 ? '' : 's'} · p50 {duration(p.p50)} · p90 {duration(p.p90)} {p.url}
+            </Text>
+          </Text>
+        ))}
+        {speed?.org_url && <Text dimColor wrap="truncate-end">org speed {speed.org_url}</Text>}
 
         {messages.length > 0 && <Text> </Text>}
         {messages.length > 0 && heading('MESSAGES', f.messages.length > SHOWN_MESSAGES ? `${f.messages.length} in 24 h` : undefined)}

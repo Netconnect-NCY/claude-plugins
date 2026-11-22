@@ -1,3 +1,4 @@
+/// <reference types="bun-types/test" />
 // The pane's own idea of Swarm2's state. `/me/control` answers runs, accounts, others, attention, deployments and capacity in
 // this shape; `/me/runs/status` adds the project messages and each run's merge reason and SHA, and on an older server without
 // `/me/control` it is mapped onto the same shape (accounts, others, capacity, pool and projects then stay empty).
@@ -200,6 +201,37 @@ export type RepoQueue = { repo: string; entries: QueueEntry[]; more: number }
 /** only repos with at least one unfinished run, capped at 10; more_repos counts the rest */
 export type Queue = { repos: RepoQueue[]; more_repos: number }
 
+/** Seconds per stage; stages with count 0 are omitted. A single run's stage has count 1 and p50 = p90 = its seconds. */
+export interface ControlSpeedStage { stage: string; count: number; p50: number; p90: number }
+/** One of the viewer's OWN recent runs; deploy only when the viewer may view that project's deploys; url = absolute run timings page
+ *  where the viewer may view the project's stage statistics, else the project page. */
+export interface ControlSpeedRun {
+  run_id: string
+  repo: string
+  outcome: string
+  total_seconds: number
+  stages: ControlSpeedStage[]
+  deploy: { seconds: number | null; status: string; environment: string | null } | null
+  url: string
+}
+/** Over the projects the viewer may view stage statistics for; url = organisation speed or project timings. */
+export interface ControlSpeedAggregate { runs: number; stages: ControlSpeedStage[]; url: string | null }
+/** run_id is null for other users' runs; url = run timings for own runs (where the viewer may view stage statistics, else the project page), project timings for others. Never the wait detail. */
+export interface ControlSpeedWait { stage: string; seconds: number; repo: string; own: boolean; run_id: string | null; url: string }
+export interface ControlSpeedProject { project_id: string; repo: string; runs: number; p50: number; p90: number; url: string }
+/** Run speed over the window (ISO since/until). runs: the viewer's own, max 5; aggregate, top_waits and slow_projects (max 5 each)
+ * cover authorized projects only; org_url only for organisation owners/admins. */
+export interface ControlSpeed {
+  window_days: number
+  since: string
+  until: string
+  runs: ControlSpeedRun[]
+  aggregate: ControlSpeedAggregate | null
+  top_waits: ControlSpeedWait[]
+  slow_projects: ControlSpeedProject[]
+  org_url: string | null
+}
+
 export type Feed = {
   /** Which feed drew the runs: the control feed, the basic status feed, or none yet. */
   source: 'control' | 'status' | null
@@ -220,6 +252,8 @@ export type Feed = {
   queue?: Queue
   /** Latest published plugin version known to the server; absent or null when unknown. */
   plugin_latest?: string | null
+  /** Run speed (control feed only); null = no organisation / nothing authorized / telemetry unavailable; absent on older servers. */
+  speed?: ControlSpeed | null
   error: string | null
   checkedAt: string | null
 }
@@ -228,4 +262,14 @@ declare module 'claude-code' {
   interface PluginState {
     'swarm2': { feed: Shaped<Feed>; frame: number; localEdits: boolean; settingsOpen: string[] }
   }
+}
+
+// Host-runtime globals the plugin tsconfig ("types": []) omits; shaped to merge cleanly with bun-types where those are loaded.
+declare global {
+  interface Timer { ref(): Timer; unref(): Timer }
+  function setTimeout(handler: () => void, timeout?: number): Timer
+  function clearTimeout(id?: number | Timer): void
+  interface ProcessStderr { stderr: { write(chunk: string): boolean } }
+  namespace NodeJS { interface Process extends ProcessStderr {} }
+  var process: NodeJS.Process
 }

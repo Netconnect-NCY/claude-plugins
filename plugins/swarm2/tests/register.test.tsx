@@ -678,3 +678,89 @@ test('a plugin_outdated attention item shows its text with the update command', 
   await has(ui, /claude plugin update swarm2@netconnect/)
   await ui.unmount()
 })
+
+// ---- run speed ----
+
+const TIMINGS = 'https://swarm2-mcp.netconnect.ro/me/projects'
+const OTHER_RUN = '77777777-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+
+function speed(over: Record<string, unknown> = {}) {
+  return {
+    window_days: 7, since: '2026-11-15T00:00:00Z', until: '2026-11-22T00:00:00Z',
+    runs: [{
+      run_id: RUN_ID, repo: 'acme/app', outcome: 'succeeded', total_seconds: 1500,
+      stages: [{ stage: 'executing', count: 1, p50: 900, p90: 900 }, { stage: 'verifying', count: 1, p50: 240, p90: 240 }],
+      deploy: { seconds: 180, status: 'succeeded', environment: 'dev' }, url: `${TIMINGS}/p1/timings?run=${RUN_ID}`,
+    }],
+    aggregate: { runs: 12, stages: [{ stage: 'executing', count: 12, p50: 600, p90: 1800 }], url: `${TIMINGS}/p1/timings` },
+    top_waits: [
+      { stage: 'queue_wait', seconds: 420, repo: 'acme/app', own: true, run_id: RUN_ID, url: `${TIMINGS}/p1/timings?run=${RUN_ID}` },
+      // another user's wait: no run id, a project-level link (a run id the server sent by mistake is dropped)
+      { stage: 'quota_wait', seconds: 3900, repo: 'acme/api', own: false, run_id: OTHER_RUN, url: `${TIMINGS}/p2/timings` },
+    ],
+    slow_projects: [{ project_id: 'p2', repo: 'acme/api', runs: 5, p50: 2400, p90: 4200, url: `${TIMINGS}/p2/timings` }],
+    org_url: 'https://swarm2-mcp.netconnect.ro/me/org?speed',
+    ...over,
+  }
+}
+
+async function speedPane($: Engine, on: On, control: Record<string, unknown>) {
+  engine(on, { control, status: EMPTY_STATUS })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  return $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 200 } })
+}
+
+test('speed: own runs with stages and deploy, aggregate p50/p90, top waits and slow projects, each with its link', async ($, on) => {
+  const ui = await speedPane($, on, { ...CONTROL, speed: speed() })
+  await has(ui, /SPEED.*last 7 d/)
+  await has(ui, /acme\/app 25m/)
+  await has(ui, /12345678 · executing 15m · verifying 4m · deploy 3m succeeded \(dev\)/)
+  await has(ui, new RegExp(`timings\\?run=${RUN_ID}`))
+  await has(ui, /all 12 runs p50\/p90 · executing 10m\/30m .*\/p1\/timings$/)
+  await has(ui, /queue_wait 7m acme\/app · you 12345678 /)
+  await has(ui, /quota_wait 1h05 acme\/api · another run .*\/p2\/timings$/)
+  await paneHas(ui, new RegExp(OTHER_RUN.slice(0, 8)), false)
+  await has(ui, /acme\/api 5 runs · p50 40m · p90 1h10 .*\/p2\/timings$/)
+  await has(ui, /org speed .*\/me\/org\?speed/)
+  await ui.unmount()
+})
+
+test('speed: a null deploy time shows ?, no deploy shows nothing, a malformed run or wait is dropped alone', async ($, on) => {
+  const base = speed()
+  const control = {
+    ...CONTROL, speed: speed({
+      runs: [
+        { ...base.runs[0], deploy: { seconds: null, status: 'deploying', environment: null } },
+        { ...base.runs[0], run_id: '33333333-aaaa-4aaa-8aaa-aaaaaaaaaaaa', repo: 'acme/web', deploy: null, stages: [] },
+        { ...base.runs[0], url: 'javascript:alert(1)', repo: 'acme/bad' },
+      ],
+      top_waits: [{ stage: 'quota_wait', repo: 'acme/api', own: false, run_id: null, url: `${TIMINGS}/p2/timings` }, base.top_waits[1]],
+      org_url: null,
+    }),
+  }
+  const ui = await speedPane($, on, control)
+  await has(ui, /deploy \? deploying/)
+  await has(ui, /acme\/web 25m/)
+  await paneHas(ui, /acme\/web .*deploy/, false)
+  await paneHas(ui, /acme\/bad/, false)
+  expect((await ui.findAll({ type: 'Text', text: /quota_wait/ })).length).toBe(1)
+  await paneHas(ui, /org speed/, false)
+  await ui.unmount()
+})
+
+for (const value of [undefined, null, 'fast', { window_days: 'x' }]) {
+  test(`speed: ${JSON.stringify(value) ?? 'an old feed without it'} draws no SPEED and the rest of the pane`, async ($, on) => {
+    const ui = await speedPane($, on, value === undefined ? CONTROL : { ...CONTROL, speed: value })
+    await has(ui, /MY REPOS/)
+    await paneHas(ui, /SPEED/, false)
+    await ui.unmount()
+  })
+}
+
+test('speed: an empty projection says there is no timing data', async ($, on) => {
+  const ui = await speedPane($, on, { ...CONTROL, speed: speed({ runs: [], aggregate: null, top_waits: [], slow_projects: [], org_url: null }) })
+  await has(ui, /SPEED/)
+  await has(ui, /No timing data in the last 7 days\./)
+  await ui.unmount()
+})
