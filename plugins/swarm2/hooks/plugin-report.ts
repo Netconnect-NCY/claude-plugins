@@ -6,7 +6,7 @@
 // The report is self-declared: anyone can send it. It is a guard rail for honest clients, not a security boundary.
 import type { EngineInterface } from 'claude-code'
 
-import { postToSwarm2 } from './connection'
+import { connectionNamespace, postToSwarm2 } from './connection'
 
 export const PLUGIN_REPORT_PATH = '/me/plugin/report'
 /** A successful report is repeated this often while the session works (the server's "recent" window defaults to 15 min). */
@@ -56,6 +56,11 @@ export function resetPluginReports(now?: () => number): void {
   clock = now ?? (() => Date.now())
 }
 
+/** For tests: the keys report memory is kept under. */
+export function reportMemoryKeys(): string[] {
+  return [...memory.keys()]
+}
+
 /** For tests: wait until every report started so far has settled. */
 export async function flushPluginReports(): Promise<void> {
   while (pending.size) await Promise.all([...pending])
@@ -68,7 +73,8 @@ async function sessionKey($: EngineInterface): Promise<string | null> {
 async function send($: EngineInterface, guard: GuardState): Promise<void> {
   if (!/^\d+\.\d+\.\d+$/.test(version)) return
   const session = await sessionKey($)
-  const key = session ?? ''
+  // namespaced by service origin + profile (never the token): another service's report never throttles this one
+  const key = `${connectionNamespace()}|${session ?? ''}`
   const now = clock()
   if (!reportDue(memory.get(key), guard, now)) return
   const entry: ReportMemory = { at: now, guard, ok: false, inflight: true }
@@ -91,4 +97,12 @@ export function reportPluginState($: EngineInterface, guardOn: boolean): Promise
   pending.add(p)
   void p.finally(() => pending.delete(p))
   return p
+}
+
+/** /swarm2-doctor: when the server last accepted a report for this service (any session), or null when none was. */
+export function lastReportAck(): number | null {
+  const prefix = `${connectionNamespace()}|`
+  let at: number | null = null
+  for (const [key, m] of memory) if (key.startsWith(prefix) && m.ok && !m.inflight && (at === null || m.at > at)) at = m.at
+  return at
 }

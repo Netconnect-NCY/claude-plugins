@@ -3,20 +3,27 @@
 //
 // (The hooks loader only lets `$` reach functions declared at the top of a file of the module, so the POSTs live here as
 // plain functions instead of callbacks register.tsx hands to the guard.)
-import type { EngineInterface } from 'claude-code'
+import type { EngineInterface, HttpInit, HttpResponse } from 'claude-code'
+
+import {
+  DEFAULT_PROFILE, STORED_PROFILES_KEY, STORED_SCOPE_KEY, STORED_TOKEN_KEY, isRedirect, mayCarryToken, normalizeProfile,
+  originOf, selectTokens, stateNamespace,
+} from './token-selection'
 
 export const DEFAULT_BASE = 'https://swarm2-mcp.netconnect.ro'
 
 let base = DEFAULT_BASE
 let configured = ''
+let profile = DEFAULT_PROFILE
 let configuredAtLoad = false
 /** Set when /swarm2-token saved a value in THIS session: only then does the stored token outrank the configured option. */
 let sessionOverride = false
 
 /** register.tsx: the base URL and the configured status token of the plugin options. Returns what it kept. */
-export function configureConnection(options: { baseUrl?: unknown; statusToken?: unknown }): { base: string; token: string } {
+export function configureConnection(options: { baseUrl?: unknown; statusToken?: unknown; profile?: unknown }): { base: string; token: string } {
   configured = typeof options.statusToken === 'string' ? options.statusToken.trim() : ''
   base = String(options.baseUrl || DEFAULT_BASE).replace(/\/+$/, '')
+  profile = normalizeProfile(options.profile)
   configuredAtLoad = true
   return { base, token: configured }
 }
@@ -25,22 +32,41 @@ export function configureConnection(options: { baseUrl?: unknown; statusToken?: 
 export function resetConnection(): void {
   base = DEFAULT_BASE
   configured = ''
+  profile = DEFAULT_PROFILE
   configuredAtLoad = false
   sessionOverride = false
 }
 
 export function setSessionOverride(value: boolean): void { sessionOverride = value }
 
+/** register.tsx: the token /swarm2-token just saved (verified) in the sensitive option, which the load-time options predate. */
+export function setConfiguredToken(value: string): void { configured = value.trim() }
+
+/** The namespace of this service's state (origin + profile; never the token). */
+export function connectionNamespace(): string { return stateNamespace(base, profile) }
+
+/** The origin + profile a /swarm2-token value is saved for (register.tsx stores it next to the token). */
+export function connectionScope(): { origin: string; profile: string } { return { origin: originOf(base), profile } }
+
 /**
- * Token candidates in order, distinct and non-empty. The configured option comes first, so a freshly fixed setting is
- * never shadowed by a stale value persisted by an earlier session; a value saved with /swarm2-token in this session is a
- * deliberate override and comes first. The store is re-read every time (another session may have rotated it).
+ * Token candidates in order (token-selection.ts selectTokens): the one selection the poll and postToSwarm2 share. The
+ * store is re-read every time (another session may have rotated it).
  */
 export async function tokenCandidates($: EngineInterface, configuredToken: string = configured): Promise<string[]> {
-  let stored = ''
-  try { stored = String((await $.store.get('statusToken')) ?? '').trim() } catch { /* no store value */ }
-  const ordered = sessionOverride ? [stored, configuredToken] : [configuredToken, stored]
-  return [...new Set(ordered.filter(Boolean))]
+  const read = async (key: string): Promise<unknown> => { try { return await $.store.get(key) } catch { return null } }
+  const [token, scope, profiles] = await Promise.all([read(STORED_TOKEN_KEY), read(STORED_SCOPE_KEY), read(STORED_PROFILES_KEY)])
+  return selectTokens({ base, profile, configured: configuredToken, sessionOverride }, { token, scope, profiles })
+}
+
+/**
+ * Fetches `url` with `token`, only when `url` is on the configured origin (otherwise it resolves a synthetic 421 and
+ * nothing is sent). The host's fetch has no redirect option, so a 3xx answer is returned as is and its Location is never
+ * requested again: no credential follows a redirect from here.
+ */
+export async function fetchWithToken($: EngineInterface, url: string, token: string, init: HttpInit = {}): Promise<HttpResponse> {
+  if (!mayCarryToken(url, base)) return { status: 421, ok: false, headers: {}, text: '' }
+  const res = await $.http.fetch(url, { ...init, headers: { ...init.headers, authorization: `Bearer ${token}` } })
+  return isRedirect(res.status) ? { ...res, ok: false } : res
 }
 
 /** POSTs JSON to `{base}{path}` with the first token candidate. Resolves true for a 2xx answer; false when nothing is
@@ -49,8 +75,8 @@ export async function postToSwarm2($: EngineInterface, path: string, body: unkno
   if (!configuredAtLoad) return false
   const t = (await tokenCandidates($))[0]
   if (!t) return false
-  const res = await $.http.fetch(`${base}${path}`, {
-    method: 'POST', headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' }, body: JSON.stringify(body),
+  const res = await fetchWithToken($, `${base}${path}`, t, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   })
   return res.ok
 }

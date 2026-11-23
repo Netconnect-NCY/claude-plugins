@@ -3,9 +3,14 @@ import { captureStop } from './capture'
 import type { EngineInterface, Register } from 'claude-code'
 
 import { parseLocalCommand, PLAN_ONLY_REFUSED_MESSAGE, PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE } from './guard'
-import { configureConnection, setSessionOverride, tokenCandidates } from './connection'
+import { configureConnection, connectionNamespace, connectionScope, fetchWithToken, setConfiguredToken, setSessionOverride, tokenCandidates } from './connection'
+import { isTransient, PollLifecycle } from './poll-lifecycle'
+import type { Attempt } from './poll-lifecycle'
+import { STORED_SCOPE_KEY, STORED_TOKEN_KEY, retryWithNextCandidate } from './token-selection'
+import { MIGRATION_REQUIRED_MESSAGE, SECURE_TOKEN_KEY, migratePlainToken, saveTokenSecurely } from './token-storage'
 import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, reportGuard, setLocal } from './guard-hook'
-import { setPluginVersion } from './plugin-report'
+import { lastReportAck, setPluginVersion } from './plugin-report'
+import { buildDoctorReport, formatDoctorReport, gatherDoctor } from './doctor'
 import { accountUsersLabel } from './account-users'
 import { cooldownProgress, durationLeft, nextFixedReset } from './window-status'
 import { baselineText, costFootnote, runCostText, todayCostText } from './cost'
@@ -23,7 +28,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.59'
+export const PLUGIN_VERSION = '0.6.61'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -74,6 +79,37 @@ let loaded = false
 let lastMessages: Message[] = []
 let spinner: { cancel: () => void } | null = null
 let controlMissingAt = 0
+// timers, generation and the successful-data time of the feed poll; replaced at each session start, disposed at its end
+let life: PollLifecycle | null = null
+// set once session.start registered the slash commands (/swarm2-doctor reports it)
+let commandsRegistered = false
+
+function lifecycle($: EngineInterface): PollLifecycle {
+  life ??= new PollLifecycle({ now: () => Date.now(), timers: $.clock, clearPrivate: forgetIdentity })
+  return life
+}
+
+/** What belonged to the previous origin, account or credential: never shown, toasted or reused under another. */
+function forgetIdentity(): void {
+  seenRuns.clear()
+  seenDeployments.clear()
+  seenAccounts.clear()
+  seenMessages = null
+  seenAttention = null
+  seenAccountAttention = null
+  loaded = false
+  lastMessages = []
+  lastControl = null
+  lastControlAt = 0
+  controlMissingAt = 0
+}
+
+/** Ends every timer of the poll and drops any answer still under way (session end, or a new session replacing it). */
+export function disposePoll(): void {
+  life?.dispose()
+  life = null
+  spinner = null
+}
 
 function short(id: string): string {
   return id.slice(0, 8)
@@ -293,7 +329,7 @@ type Answer = { status: number; body: unknown } | { status: 0; body: null; unrea
 
 async function fetchJson($: EngineInterface, url: string, token: string): Promise<Answer> {
   try {
-    const res = await $.http.fetch(url, { headers: { authorization: `Bearer ${token}` } })
+    const res = await fetchWithToken($, url, token)
     return { status: res.status, body: res.ok ? JSON.parse(res.text) : null }
   } catch {
     return { status: 0, body: null, unreachable: true }
@@ -359,26 +395,48 @@ function anyActive(f: Feed): boolean {
 }
 
 function setSpinner($: EngineInterface, on: boolean): void {
-  if (on && !spinner) spinner = $.clock.every(SPIN_MS, () => void update($, frame, n => (n + 1) % FRAMES.length)) ?? null
+  if (on && !spinner) {
+    spinner = $.clock.every(SPIN_MS, () => void update($, frame, n => (n + 1) % FRAMES.length)) ?? null
+    lifecycle($).track(spinner)
+  }
   if (!on && spinner) {
     spinner.cancel()
+    lifecycle($).untrack(spinner)
     spinner = null
   }
 }
 
 async function fail($: EngineInterface, error: string): Promise<void> {
-  await update($, feed, f => ({ ...f, error, checkedAt: new Date().toISOString() }))
+  // a failed attempt keeps checkedAt: it is the time data last arrived, so the pane turns stale while failures go on
+  await update($, feed, f => ({ ...f, error }))
 }
 
-async function poll($: EngineInterface, configured: string, base: string): Promise<void> {
+/** Records the identity of this attempt; a new one (origin, profile or credential) drops the shown feed. The key stays in
+ * memory only. Resolves the generation the attempt's answers must still match. */
+async function enter($: EngineInterface, l: PollLifecycle, token: string): Promise<number> {
+  const before = l.generation
+  const generation = l.identify(`${connectionNamespace()}\u0000${token}`)
+  if (generation !== before) await update($, feed, () => EMPTY)
+  return generation
+}
+
+/** One feed poll, shared by every caller while it runs and retried with a bounded backoff when Swarm2 is unreachable. */
+function poll($: EngineInterface, configured: string, base: string): Promise<void> {
+  return lifecycle($).request(() => pollOnce($, configured, base))
+}
+
+async function pollOnce($: EngineInterface, configured: string, base: string): Promise<Attempt> {
+  // the lifecycle this attempt belongs to: after a dispose its answers are dropped, never applied to a newer one
+  const l = lifecycle($)
   // /config does not show secret fields, so the token is normally saved with /swarm2-token (the mod's local store)
   let token = (await tokenCandidates($, configured))[0] ?? ''
   if (!token) {
     await update($, feed, f => ({ ...f, error: `No status token: run /swarm2-token s2s_… (create one at ${base}/me/status-tokens)` }))
     $.ui.status(await isLocalOn($) ? statusLine(EMPTY, environmentLabel(base).name, true) : undefined)
     setSpinner($, false)
-    return
+    return 'final'
   }
+  let generation = await enter($, l, token)
   // the plugin report (version, guard on/off) for the server's plan_only client gate: throttled, in the background
   void reportGuard($)
   const askControl = Date.now() - controlMissingAt > CONTROL_RETRY_MS
@@ -387,8 +445,8 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
     askControl ? fetchJson($, `${base}/me/control`, token) : Promise.resolve(null),
     fetchJson($, `${base}/me/runs/status`, token),
   ])
-  if (status.status === 401) {
-    // Try every other candidate once (configured option, stored value — re-read, it may have been rotated).
+  if (retryWithNextCandidate(status.status)) {
+    // 401 only (a 403 is final): try every other candidate once (configured option, stored value — re-read, it may have been rotated).
     const tried = new Set([token])
     for (const candidate of await tokenCandidates($, configured)) {
       if (tried.has(candidate)) continue
@@ -400,17 +458,24 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
       ])
       if (status.status !== 401) break
     }
+    if (status.status !== 401) generation = await enter($, l, token)
+    if (!l.isCurrent(generation)) return 'final'
     if (status.status === 401) {
       await fail($, `status token rejected — create a new one at ${base}/me/status-tokens and run /swarm2-token s2s_…, or /swarm2-token clear to use the configured setting`)
       $.ui.status(undefined)
       setSpinner($, false)
-      return
+      return 'final'
     }
   }
+  // an answer to an older connection (identity changed, or the session ended meanwhile) is dropped
+  if (!l.isCurrent(generation)) return 'final'
   // before the control feed shipped the route is absent: 404, or 403 because a status token reaches only the feed paths
   if (control && (control.status === 404 || control.status === 403)) controlMissingAt = Date.now()
   const statusBody = status.status === 200 && status.body ? (status.body as StatusBody) : null
-  const checkedAt = new Date().toISOString()
+  const fresh = statusBody !== null || (control?.status === 200 && control.body != null)
+  if (fresh) l.markSuccess(generation)
+  const success = l.lastSuccessfulDataAt
+  const checkedAt = success === null ? null : new Date(success).toISOString()
   let next: Feed
   if (control && control.status === 200 && control.body) {
     const body = control.body as Partial<Feed>
@@ -450,11 +515,11 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
   } else if (lastControl && Date.now() - lastControlAt < CONTROL_GRACE_MS) {
     // Both feeds failed for a moment (typically the api pods rolling during a deploy): keep the last full feed, marked.
     const failed = control && control.status !== 404 && control.status !== 403 ? control : status
-    next = { ...lastControl, error: `reconnecting… (Swarm2 ${failed.status ? `HTTP ${failed.status}` : 'unreachable'}; showing data from ${Math.round((Date.now() - lastControlAt) / 1000)} s ago)`, checkedAt }
+    next = { ...lastControl, error: `reconnecting… (Swarm2 ${failed.status ? `HTTP ${failed.status}` : 'unreachable'}; showing data from ${Math.round((Date.now() - lastControlAt) / 1000)} s ago)`, checkedAt: lastControl.checkedAt }
   } else {
     const failed = control && control.status !== 404 && control.status !== 403 ? control : status
     await fail($, failed.status ? `Swarm2 answered HTTP ${failed.status}` : 'Swarm2 unreachable')
-    return
+    return isTransient(failed.status) ? 'transient' : 'final'
   }
   lastMessages = next.messages
   if (next.source === 'control' && next.error === null) { lastControl = next; lastControlAt = Date.now() }
@@ -462,11 +527,14 @@ async function poll($: EngineInterface, configured: string, base: string): Promi
   await update($, feed, () => next)
   $.ui.status(statusLine(next, environmentLabel(base).name, await isLocalOn($)))
   setSpinner($, anyActive(next))
+  return fresh ? 'ok' : 'transient'
 }
 
 export const register: Register = (on, options) => {
   // the base URL and configured token, shared with the guard's override report and the plugin report (connection.ts)
-  const { base, token } = configureConnection(options)
+  const connection = configureConnection(options)
+  const { base } = connection
+  let { token } = connection // updated when /swarm2-token saves a verified value
   setPluginVersion(PLUGIN_VERSION)
 
   on('classic.Stop', ($, e, next) => captureStop(
@@ -478,17 +546,32 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'swarm2', description: 'Show the Swarm2 control pane' })
     await $.command.register({ name: 'swarm2-token', description: 'Save the read-only Swarm2 status token (s2s_…), or "clear"' })
     await $.command.register({ name: 'swarm2-local', description: 'Allow (on) or block (off, the default) local edits to Swarm2 repos in this session' })
+    await $.command.register({ name: 'swarm2-doctor', description: 'Report the Swarm2 plugin\'s host, connection and state; "check" also asks the server\'s readiness' })
+    commandsRegistered = true
     await initGuard($)
+    // a plain-text token from an older version moves to secure storage; until it can, the person is asked to re-enter it
+    const migration = await migratePlainToken($)
+    if (migration === 'migration_required') $.ui.toast(MIGRATION_REQUIRED_MESSAGE)
     void $.ui.open({ id: PANE, title: TITLE })
+    disposePoll() // a session that starts again (/clear, resume) never keeps the previous one's timers
     void poll($, token, base)
-    $.clock.every(POLL_MS, () => poll($, token, base))
+    lifecycle($).every(POLL_MS, () => void poll($, token, base))
+    return next(e)
+  })
+
+  // the host's lifecycle end for this plugin: no timer, retry or answer outlives the session
+  on('session.end', ($, e, next) => {
+    disposePoll()
     return next(e)
   })
 
   on('command.run', { command: 'swarm2-token' }, async ($, e) => {
     const value = e.args.trim()
     if (value === 'clear') {
-      await $.store.delete('statusToken')
+      await $.store.delete(STORED_TOKEN_KEY)
+      await $.store.delete(STORED_SCOPE_KEY)
+      const cleared = await $.config.set({ key: SECURE_TOKEN_KEY, value: '' }).catch(() => ({ deny: 'error' }))
+      if (cleared.deny === undefined) { token = ''; setConfiguredToken('') }
       setSessionOverride(false)
       await poll($, token, base)
       return { text: 'Swarm2 status token removed.' }
@@ -496,8 +579,10 @@ export const register: Register = (on, options) => {
     if (!/^s2s_[A-Za-z0-9_-]{16,}$/.test(value)) {
       return { text: `Usage: /swarm2-token s2s_… (create a read-only token at ${base}/me/status-tokens), or /swarm2-token clear` }
     }
-    await $.store.set('statusToken', value)
-    setSessionOverride(true)
+    // stored only in the sensitive option (secure storage), never in the plain store; unverified means re-enter it masked
+    if (await saveTokenSecurely($, value) !== 'saved') return { text: MIGRATION_REQUIRED_MESSAGE }
+    token = value
+    setConfiguredToken(value)
     await poll($, token, base)
     return { text: 'Swarm2 status token saved; the Swarm2 pane now updates every 5 s.' }
   })
@@ -524,6 +609,21 @@ export const register: Register = (on, options) => {
     return { text: cmd.value === 'on'
       ? 'Local edits to Swarm2 repos are ON for this session (recorded). /swarm2-local off blocks them again.'
       : 'Local edits to Swarm2 repos are OFF: submit a job (swarm_task_submit) or send a plan (swarm_plan_propose) instead.' }
+  })
+
+  on('command.run', { command: 'swarm2-doctor' }, async ($, e) => {
+    const arg = e.args.trim()
+    if (arg && arg !== 'check') return { text: 'Usage: /swarm2-doctor [check]' }
+    // the token is reduced to set / not set here; it never enters the report
+    const tokenSet = await tokenCandidates($, token).then(c => c.length > 0, () => null)
+    const facts = await gatherDoctor($, {
+      base, pluginVersion: PLUGIN_VERSION, paneId: PANE, commandsRegistered, tokenSet,
+      guard: await isLocalOn($).then(local => ({ on: !local, envOverride: isEnvOverride() }), () => null),
+      lastFeedSuccessAt: life ? life.lastSuccessfulDataAt : undefined,
+      lastReportAckAt: lastReportAck(),
+      check: arg === 'check',
+    })
+    return { text: formatDoctorReport(buildDoctorReport(facts)) }
   })
 
   on('command.run', { command: 'swarm2' }, async $ => {

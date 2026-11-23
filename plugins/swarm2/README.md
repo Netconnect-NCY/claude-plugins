@@ -144,6 +144,50 @@ project message toasts once; more than three at once collapse into one summary
 toast. Servers older than M-G send no deployments or messages; the pane then
 shows runs only.
 
+## `/swarm2-doctor`: what the plugin can see about itself
+
+`/swarm2-doctor` prints one plain-text report (`hooks/doctor.ts`, tests in `test/plugin/doctor.test.ts`):
+
+- **Header lines:** host version and surface, plugin / package / skill names and versions, service URL and profile, the status token as `set (redacted)` or `not set`, MCP server state (`connected` or `not connected (<reason>)`), mod state (commands registered, panel `open` / `open (not placed)` / `closed`, guard `on` / `off`, with `SWARM2_LOCAL_EDITS` named when it is the override), the age of the last successful feed poll (`never this session` before the first), and the age of the last acknowledged plugin report (`none this session`).
+- **Server readiness:** `not checked (run /swarm2-doctor check)` by default. `/swarm2-doctor check` reads the public `GET <baseUrl>/readyz` once (4 s timeout, no retry) and reports `ready`, `not ready` or `unreachable`, with the HTTP status when there is one. **No credential is sent** to `/readyz`.
+- **Try:** repair commands, only when something is wrong and only on a CLI, desktop or IDE host: `/mcp` (server not connected), `/swarm2-token s2s_…` (token not set), `/plugin` (commands not registered). On headless, web/mobile and unknown hosts the section is never printed.
+
+**Unknown stays unknown.** A fact that no host API answers (for example the host application's name, or the skill's version, which the skill does not declare) or whose lookup fails is printed as `unknown`, never guessed. The token is never part of the report, only whether one is set. Any argument other than `check` prints `Usage: /swarm2-doctor [check]`.
+
+## Status token storage and handling
+
+- **Where it is kept.** `/swarm2-token` writes the token to the plugin's `statusToken` option, declared `sensitive` in the manifest, which the host keeps in its secure option storage (`hooks/token-storage.ts`). The save counts only after reading it back equal; otherwise the command reports `migration_required` and you re-enter it in `/config` (a masked field). Older versions kept a plain copy in the plugin store; it is moved once and deleted only after the secure copy verifies. Tokens saved for other profiles of the same origin may still sit in the plugin store as fallbacks (`hooks/token-selection.ts`).
+- **Only to its own origin.** A token is sent only to the configured `baseUrl` origin (`mayCarryToken`); a request to any other origin is refused before anything is sent. A redirect answer is returned as is and never followed, so no credential follows a redirect. A stored token saved for another origin is never a candidate.
+- **A 403 is final.** Only a 401 moves on to the next candidate token (configured option, stored value of this origin and profile, then other profiles of the same origin). A 403 is never retried with another credential, and never retried at all.
+- **Never logged.** The token is not logged, not shown in the pane, the toasts or the doctor report, and not part of any state key (state is keyed by origin + profile).
+
+## Feed freshness
+
+The pane polls the control feed every **5 s** (`POLL_MS`). Freshness is read from the time data last arrived, not the last attempt:
+
+| State | When | Shown |
+| --- | --- | --- |
+| connecting | no data yet | `connecting…` |
+| fresh | data arrived 30 s ago or less | `updated <time>` |
+| stale | last data older than **30 s** (`STALE_MS`), failures included | `stale · updated <time>` in yellow |
+| reconnecting | a transient control-feed failure (unreachable, 408, 429, 5xx) within **2 min** (`CONTROL_GRACE_MS`) of the last full feed | the last full feed with `reconnecting… (… showing data from N s ago)` |
+
+A transient failure of a poll is retried up to 3 tries in all, pausing 1 s, then 2 s (doubling, capped at 8 s). A 401, 403 or other 4xx is final and not retried. A change of origin, profile or credential drops the shown feed and the freshness clock. Per-account usage is separately marked `stale` when its newest figure is older than 6 hours (see ACCOUNTS above). An older server without `/me/control` (404, or 403 for a status token) is asked again every 5 minutes.
+
+## Client capability matrix
+
+"Verified" means the cell follows from this plugin's code (`hooks/doctor.ts` surfaces: `terminal` → CLI, `desktop`, `vscode` → IDE, `mobile` → web, none → headless) or from the host types vendored in `types/vendor/claude-code.d.ts`. The `@anthropic-ai` packages are not installed here, so nothing was checked against them. Anything not shown by either is `unverified`: no host behaviour is assumed.
+
+| Client | Commands | Panel / pane | Hooks / guard | Feed poll | Doctor repair hints | MCP tools |
+| --- | --- | --- | --- | --- | --- | --- |
+| Terminal CLI | registered at session start (verified in code) | unverified (the pane is registered by the plugin; its drawing per surface is unverified) | unverified (hooks and the guard are plugin code; whether this host runs them is unverified) | unverified | shown (verified: `mayRepair`) | unverified (the MCP server is declared in `plugin.json`; the host connection is read by the doctor) |
+| Claude Desktop | unverified | unverified | unverified | unverified | shown (verified: `mayRepair`) | unverified |
+| VS Code | unverified | unverified | unverified | unverified | shown (verified: `mayRepair`) | unverified |
+| Headless (`-p` / SDK) | unverified | unverified | unverified | unverified | never shown (verified: no surface is `headless`) | unverified |
+| Portable MCP-only (Codex / OpenAI, other clients) | none: the plugin's hooks are not loaded (unverified) | none (unverified) | none (unverified) | none (unverified) | never shown (verified: not a CLI, desktop or IDE surface) | the server's `swarm_*` tools over `streamable-http` (declared in `mcp.json`; the client's own support is unverified) |
+
+Web/mobile hosts (surface `mobile`) get no repair hints either; the other cells for them are unverified.
+
 ## Codex / OpenAI
 
 The same `plugins/swarm2` folder is also a portable Codex / OpenAI plugin: root `plugin.json` identifies the package, root `mcp.json` declares a `streamable-http` server at `https://swarm2-mcp.netconnect.ro/mcp`, and `skills/working-with-swarm2/SKILL.md` is shared with Claude Code. In Codex CLI, run `codex plugin marketplace add Netconnect-NCY/claude-plugins`, then install the swarm2 plugin from that marketplace (Plugins directory). Alternatively, install this folder through a local plugin marketplace; see the [official packaging instructions](https://developers.openai.com/plugins/build/plugins).
