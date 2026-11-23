@@ -35,6 +35,18 @@ On a project with `plan_only` on, non-owners only plan: `swarm_task_submit` / `s
 
 keep the guard on (no `/swarm2-local on`, no `SWARM2_LOCAL_EDITS`), and retry after the plugin has reported (restart the session if needed). `swarm_capabilities`, `swarm_projects`, `swarm_open_project` and `swarm_credentials_status` keep working and show the same fix in a `client_gate` field. Owners are exempt. Details: [plan-only client gate](../../docs/CLIENT_GATE.md).
 
+## Capture every commitment immediately
+
+Owner Alex (2026-11-23): **Swarm2 is the durable memory of ALL work.** Immediately record each actionable follow-up, deferred fix or promise to do something later/after X with `swarm_task_submit`; keep its returned `run_id`. Path overlap is a queue, not a reason to postpone submission. Never claim "queued" without a successful durable response. Check existing work first and reuse its ID rather than duplicate it.
+
+For ideas that are not yet actionable, load `swarm_plan_get({repo})`, then use the existing project-plan item API: `swarm_plan_propose({repo,base_version,changes:{items:[{title,notes,status:"proposed"}]}})`. Keep the returned `revision_id` while pending; after approval reload the plan and retain the item's actual `id` (use `plan_item_id` when submitting its implementation). A proposed item is not authorization. Work outside the current authorization must stay a proposal until approved; do not submit an executable run just to capture it. Plan-only restrictions and all existing approval boundaries still apply.
+
+**No local-only list:** chat notes, private TODOs, scratch files and checkpoint `next_actions` do not replace task or project-plan item IDs. Nothing queued disappears silently: retain its ID, outcome and explicit reason for cancellation, rejection or deferral. If APIs are unavailable or a write is refused, report that the commitment is NOT captured and why; never invent an ID or work around access controls.
+
+Before a session or long task ends, list every commitment and confirm its durable Swarm2 ID (or pending proposal revision and approval status). A checkpoint should reference those records, not become a second queue.
+
+The Claude Code hooks module adds an advisory `classic.Stop` reminder for assistant promises mentioning follow-up, later or queued work without an associated ID observed in Swarm2 results. It never blocks stopping, submits work or grants approval. It reads only available transcript messages, excludes quoted/code text from promise detection, and appends a fixed model-visible `additionalContext` advisory to the Stop result, also showing a UI notice, without echoing transcript content. Existing Stop decisions and context are preserved; no continuation is requested. If transcript access has not settled when downstream Stop returns, it uses `last_assistant_message` instead, so an already captured commitment can receive a conservative reminder. Context is available to the model if the host runs another turn naturally; the reminder cannot revise an already completed answer or guarantee another turn. This is a best-effort English-language heuristic, not proof of capture: older runtimes or other MCP clients may not run it, and compacted or unavailable results cannot be verified. The capture rule applies even without the hook.
+
 ## 1. When to use, when not
 
 Use it when the project is registered in Swarm2 (check with `swarm_projects`) and you need durable context, a delegated coding run with verified evidence, or a handoff another chat or agent can pick up.
@@ -126,7 +138,7 @@ swarm_task_submit({
 
 ### f. Preserve the handoff
 
-Before you stop: record run ids, results and new decisions with `swarm_checkpoint` (and `swarm_memory_propose` for decisions), so the next chat finds them in `swarm_open_project`. Do not leave state only in the chat.
+Before you stop: list all commitments and confirm their durable Swarm2 IDs as above; record run ids, results and new decisions with `swarm_checkpoint` (and `swarm_memory_propose` for decisions), so the next chat finds them in `swarm_open_project`. Do not leave state only in the chat.
 
 ### g. Diagnose calls
 

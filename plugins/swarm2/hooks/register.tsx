@@ -1,4 +1,5 @@
 import { atom, read, update } from 'claude-code'
+import { captureStop } from './capture'
 import type { EngineInterface, Register } from 'claude-code'
 
 import { parseLocalCommand, PLAN_ONLY_REFUSED_MESSAGE, PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE } from './guard'
@@ -22,7 +23,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.58'
+export const PLUGIN_VERSION = '0.6.59'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -467,6 +468,10 @@ export const register: Register = (on, options) => {
   // the base URL and configured token, shared with the guard's override report and the plugin report (connection.ts)
   const { base, token } = configureConnection(options)
   setPluginVersion(PLUGIN_VERSION)
+
+  on('classic.Stop', ($, e, next) => captureStop(
+    () => $.session.messages(), text => $.ui.log(text), () => next(e), e.last_assistant_message,
+  ))
 
   on('session.start', async ($, e, next) => {
     setSessionOverride(false) // an override is session-scoped; a persisted value from an earlier session never outranks the setting
