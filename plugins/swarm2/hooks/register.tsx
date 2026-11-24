@@ -1,5 +1,6 @@
 import { atom, read, update } from 'claude-code'
 import { captureStop } from './capture'
+import { checkpointStop } from './checkpoint-reminder'
 import type { EngineInterface, Register } from 'claude-code'
 
 import { parseLocalCommand, PLAN_ONLY_REFUSED_MESSAGE, PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE } from './guard'
@@ -28,7 +29,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.65'
+export const PLUGIN_VERSION = '0.6.66'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -538,7 +539,8 @@ export const register: Register = (on, options) => {
   setPluginVersion(PLUGIN_VERSION)
 
   on('classic.Stop', ($, e, next) => captureStop(
-    () => $.session.messages(), text => $.ui.log(text), () => next(e), e.last_assistant_message,
+    () => $.session.messages(), text => $.ui.log(text),
+    () => checkpointStop(() => $.session.messages(), text => $.ui.log(text), () => next(e)), e.last_assistant_message,
   ))
 
   on('session.start', async ($, e, next) => {

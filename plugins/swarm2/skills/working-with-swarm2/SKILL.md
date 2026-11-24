@@ -7,6 +7,23 @@ description: Plan, delegate, monitor and review work on GitHub projects register
 
 Swarm2 stores project plans, decisions, handoffs and runs in PostgreSQL and executes coding work on isolated remote workers. The connected client plans, reads, reviews and instructs; Swarm2 writes the code.
 
+## Hard rule: Swarm2 holds your working notes
+
+Keep no working notes in local files (LEDGER.md, TODO, scratch). A client switch (Claude Code, Codex, web) must lose nothing.
+
+1. **Session start, before any work:** call `swarm_open_project`, read the latest project checkpoint (open `next_actions`, open questions, watched PRs/CI, pending deploys) and continue from it.
+2. **Write immediately:** every owner decision, commitment, follow-up, watched PR/CI run and pending deploy goes to Swarm2 at once: `swarm_checkpoint` project-level `next_actions` / `open_questions`, `swarm_task_submit` for work, `swarm_memory_propose` with type `decision` for decisions. Never only in a local file, chat or TODO.
+3. **Before ending a turn that changed state, and before any long wait,** save a project `swarm_checkpoint` that another client can resume from.
+4. **Merges and deploys go through Swarm2 tools** (`swarm_ci_run`, `swarm_merge_record`, `swarm_deploy_request` / auto prod), not local CLIs.
+
+### Handoff checklist
+
+- [ ] Open `next_actions` and open questions are in the latest project checkpoint.
+- [ ] Decisions are `swarm_memory_propose` type `decision` records.
+- [ ] Watched PRs/CI runs and pending deploys are named in the checkpoint.
+- [ ] Follow-up work has a `run_id` from `swarm_task_submit`.
+- [ ] Nothing exists only in a local file, chat or TODO.
+
 ## Choose a procedure
 
 Read only the procedure needed now; follow its links when the workflow changes.
