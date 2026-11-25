@@ -20,7 +20,7 @@ For setup use **Connect**; for consent and account changes use **Accounts and sh
 
 Swarm2 is a remote MCP server (Streamable HTTP, `https://swarm2-mcp.netconnect.ro/mcp`, Keycloak realm `netconnect`, pre-registered public OAuth client `swarm2-mcp`, PKCE, no client secret or DCR) that keeps a project's plan, decisions, handoffs and runs in PostgreSQL and executes coding tasks on isolated remote workers. For client setup, add that production Streamable HTTP endpoint and complete browser OAuth with the public client above. The Claude Code plugin uses `${user_config.baseUrl}/mcp`; `baseUrl` is configurable and defaults to `https://swarm2-mcp.netconnect.ro`. Use the intended service URL and confirm the connection with `swarm_capabilities` and `swarm_projects`.
 
-Client support: Claude Code is verified; ChatGPT and Codex are not yet verified.
+Client support: Claude Code is verified; ChatGPT and Codex are not yet verified (install routes, plan limits and the evidence checklist are in `docs/clients/chatgpt.md` and `docs/clients/codex.md`).
 
 ### Accounts and sharing
 

@@ -10,8 +10,9 @@
             "type": "oauth",
             "authorizationUrl": "https://auth.netconnect.ro/auth/realms/netconnect/protocol/openid-connect/auth",
             "tokenUrl": "https://auth.netconnect.ro/auth/realms/netconnect/protocol/openid-connect/token",
-            "resource": "https://swarm2-mcp.netconnect.ro/mcp",
-            "defaultScopes": ["openid", "email", "profile", "offline_access"],
+            "resource": "https://swarm2-mcp.netconnect.ro",
+            "baseScopes": ["swarm2.read", "swarm2.write"],
+            "defaultScopes": ["openid", "offline_access"],
             "client": {
               "mode": "provided",
               "clientId": "swarm2-mcp",
