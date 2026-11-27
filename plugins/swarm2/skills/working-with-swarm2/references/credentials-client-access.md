@@ -109,7 +109,16 @@ Both `/swarm2-local on` and `SWARM2_LOCAL_EDITS=1` are refused for plan-only non
 
 ### Plan-only client gate
 
-On a project with `plan_only` on, non-owners only plan: `swarm_task_submit` / `swarm_task_draft` answer `plan_only_project` (send the plan with `swarm_plan_propose`). In addition, every Swarm2 call that acts on such a project is accepted from a non-owner only from Claude Code or Codex with the Swarm2 plugin installed, up to date and its local-edit guard on. Otherwise the call fails with `plan_only_client_required` (its `reason` says which part is missing). When you see it, do not retry and do not try to work around it: tell the person, verbatim, to run
+On a project with `plan_only` on, non-owners only plan: `swarm_task_submit` / `swarm_task_draft` answer `plan_only_project` (send the plan with `swarm_plan_propose`). Passing the client gate never changes that restriction. Project owners are exempt from the client gate.
+
+For project-acting calls by a non-owner, the server accepts two paths:
+
+- **Local CLI clients:** Claude Code or Codex with the Swarm2 plugin installed and up to date must keep the local-edit guard on and provide a fresh plugin report.
+- **Supported remote chat connectors, including ChatGPT:** no local plugin report is required. The server must recognize the client identity carried by the current request. The host manages the session/client-identity binding established during MCP initialization; an earlier connection by the same user does not grant this pass.
+
+On `plan_only_client_required`, do not retry and do not try to work around it. Inspect the returned `reason` and client details, then recover the actual client:
+
+- **Claude Code/Codex:** give these exact install/update commands:
 
 ```
 /plugin marketplace add Netconnect-NCY/claude-plugins
@@ -117,6 +126,10 @@ On a project with `plan_only` on, non-owners only plan: `swarm_task_submit` / `s
 /plugin update swarm2
 ```
 
-keep the guard on (no `/swarm2-local on`, no `SWARM2_LOCAL_EDITS`), and retry after the plugin has reported (restart the session if needed). `swarm_capabilities`, `swarm_projects`, `swarm_open_project` and `swarm_credentials_status` keep working and show the same fix in a `client_gate` field. Owners are exempt.
+Keep the guard on (no `/swarm2-local on`, no `SWARM2_LOCAL_EDITS`), ensure the plugin has its status token through the supported browser/plugin setup, and retry only after a fresh report. Never request the token in chat.
+
+- **Remote ChatGPT/Claude connector:** use the host's normal reconnect flow to establish a fresh MCP connection, then check the gate once. If it remains refused, report the exact safe error reason for operator diagnosis of the connector identity and current-request binding. Do not prescribe CLI installation to a remote chat user. Do not forge `clientInfo`, copy/replay session tokens, or change the accepted-client configuration to evade a refusal; any operator configuration change requires separate authorization and evidence.
+
+`swarm_capabilities`, `swarm_projects`, `swarm_open_project` and `swarm_credentials_status` remain available for orientation and expose a `client_gate` notice when applicable. These reads do not lift a refusal. An installed skill or package alone proves neither an authenticated MCP connection nor ChatGPT web compatibility.
 
 For invalid credentials and private diagnostic evidence use [monitoring and recovery](monitoring-recovery.md#recovery). For GitHub identity failures use [review and publication](review-publication.md#recovery).
