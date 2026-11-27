@@ -10,6 +10,8 @@ import {
 } from './guard'
 import type { LocalAuditEntry, ProjectMeta, ProjectsCache } from './guard'
 import { postToSwarm2 } from './connection'
+import { deadline } from './deadline'
+import type { Deadline } from './deadline'
 import { reportPluginState } from './plugin-report'
 
 export const PROJECTS_KEY = 'guardProjects'
@@ -45,11 +47,10 @@ export function setGuardTiming(t: { now?: (() => number) | null; lookupDeadlineM
   lookupDeadlineMs = t?.lookupDeadlineMs ?? 3000
 }
 
-/** Where the guard's warnings go (stderr); a test swaps it. */
+/** Where the guard's warnings go: the host's debug log ($.ui.log) unless a test swaps it. */
 export type Warn = (message: string) => void
-const defaultWarn: Warn = m => { try { process.stderr.write(`${m}\n`) } catch { /* no stderr */ } }
-let warn: Warn = defaultWarn
-export function setGuardWarn(fn: Warn | null): void { warn = fn ?? defaultWarn }
+let warn: Warn | null = null
+export function setGuardWarn(fn: Warn | null): void { warn = fn }
 
 /** For tests: forget the module's memory (a reload does the same). */
 export function resetGuardMemory(): void {
@@ -59,7 +60,7 @@ export function resetGuardMemory(): void {
   envOverride = false
   hostnames.clear()
   lookups.clear()
-  warn = defaultWarn
+  warn = null
 }
 
 /** Saves the project list (from the control feed or swarm_projects) with the time it was seen. An entry is a repo string or a
@@ -133,20 +134,19 @@ async function resolveHostname($: EngineInterface, host: string): Promise<string
 async function resolveHostnames($: EngineInterface, hosts: string[]): Promise<Map<string, string | null>> {
   const unique = [...new Set(hosts)]
   const out = new Map<string, string | null>()
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const deadline = new Promise<void>(resolve => { timer = setTimeout(resolve, lookupDeadlineMs) })
+  const overall = deadline($, lookupDeadlineMs, undefined)
   try {
     await Promise.all(unique.map(async h => {
       const r = await Promise.race([
         resolveHostname($, h),
-        deadline.then(() => {
+        overall.promise.then(() => {
           if (!hostnames.has(h)) hostnames.set(h, { hostname: null, at: clock() })
           return null
         }),
       ])
       out.set(h, r)
     }))
-  } finally { clearTimeout(timer) }
+  } finally { overall.cancel() }
   return out
 }
 
@@ -190,7 +190,9 @@ async function checkoutVerdict($: EngineInterface, root: string): Promise<Verdic
         refuses = matched.some(r => planOnlyRefuses(meta[r]))
         identified = remoteMatch
         if (!registered && !remoteMatch && githubLike.length) {
-          warn(`swarm2 guard: no Swarm2 project matches this checkout's remotes (${[...new Set(githubLike)].join(', ')}); local edits are allowed`)
+          const message = `swarm2 guard: no Swarm2 project matches this checkout's remotes (${[...new Set(githubLike)].join(', ')}); local edits are allowed`
+          if (warn) warn(message)
+          else { try { $.ui.log(message, { to: 'debug' }) } catch { /* no log */ } }
         }
         registered = registered || remoteMatch
       }
@@ -252,10 +254,11 @@ export async function setLocal(
   if (!refused && source === 'command') await $.state.set({ plugin: 'swarm2', key: 'localEdits' }, value === 'on')
   const entry: LocalAuditEntry = { at: new Date().toISOString(), session: await sessionId($), value, source, action: refused ? 'refused' : 'applied' }
   try { await $.store.set(AUDIT_KEY, appendAudit(await $.store.get(AUDIT_KEY), entry)) } catch { /* the local log is secondary */ }
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let timeout: Deadline<boolean> | undefined
   try {
-    await Promise.race([postToSwarm2($, GUARD_OVERRIDE_PATH, entry), new Promise<boolean>(r => { timer = setTimeout(() => r(false), 4000) })])
-  } catch { /* best-effort */ } finally { clearTimeout(timer) }
+    timeout = deadline($, 4000, false) // inside the try: a host clock that throws never escapes this best-effort post
+    await Promise.race([postToSwarm2($, GUARD_OVERRIDE_PATH, entry), timeout.promise])
+  } catch { /* best-effort */ } finally { timeout?.cancel() }
   if (!refused && source === 'command') await reportGuard($) // the guard state changed: report it now
   return why === 'plan_only' ? 'refused' : why === 'unknown' ? 'refused_unknown' : 'applied'
 }

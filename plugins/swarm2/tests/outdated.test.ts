@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, test } from 'claude-code/testing'
 import { outdatedLatest } from '../hooks/toasts'
 
 test('outdatedLatest compares numeric semver and ignores suffixes', () => {

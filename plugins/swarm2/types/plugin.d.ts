@@ -1,0 +1,264 @@
+// The pane's own idea of Swarm2's state. `/me/control` answers runs, accounts, others, attention, deployments and capacity in
+// this shape; `/me/runs/status` adds the project messages and each run's merge reason and SHA, and on an older server without
+// `/me/control` it is mapped onto the same shape (accounts, others, capacity, pool and projects then stay empty).
+
+/** `_quota` is one persistent account cooldown: null percentage, scheduling retry in resets_at. */
+export type UsageWindow = {
+  name: string
+  used_pct: number | null
+  resets_at: string | null
+  /** True when resets_at has passed: used_pct is then null (the figure no longer holds). Absent for live windows and on older servers. */
+  expired?: boolean
+  /** When this window was measured; absent on older servers. */
+  observed_at?: string | null
+}
+
+export type Account = {
+  id: string
+  provider: string
+  kind: string
+  label: string | null
+  /** "you", or "pool · <contributor>" */
+  owner: string
+  /** ok | cooling | degraded | exhausted | invalid | unknown (degraded: provider rate limit / 5xx on the current version) */
+  health: string
+  /** Since when the degraded/invalid state has held; null when healthy, unknown, or an older server. */
+  health_since?: string | null
+  /** Generic redacted reason for failure health or cooldown (kind + HTTP status); null when healthy, hidden for pool accounts a
+   * member views, or an older server. Never another user's run content. */
+  last_error?: string | null
+  /** True when invalid and dispatch skips this account until its owner replaces the credential; absent on older servers. */
+  attention?: boolean
+  /** Current invalid transition timestamp; visible to the owner or pool admin only. */
+  notified_at?: string | null
+  windows: UsageWindow[]
+  observed_at: string | null
+  /** Whether a usage measurement exists for this provider/kind; absent on older servers. */
+  measurement?: 'measured' | 'not_measurable'
+  /** True when the newest measurement is older than 6 hours; absent on older servers. */
+  stale?: boolean
+  in_use: number
+  engine_workers: number
+  users: { name: string; count: number }[]
+}
+
+export type EngineWorker = { id: string; vendor: string; model: string | null; last_action: string | null; since: string | null }
+
+/** A queued run waiting for paths held by another run (status_reason waiting_for_paths). */
+/** Path-conflict rebase risk (auto mode): score 0..100, band and short reasons; an older server omits it. */
+export type ConflictRisk = { score: number; band: 'low' | 'medium' | 'high'; reasons: string[] }
+export type WaitingForPaths = { blocking_run_id: string; blocking_pattern: string | null; conflict_risk?: ConflictRisk }
+
+export type Run = {
+  run_id: string
+  repo: string
+  requester: string | null
+  mine: boolean
+  goal: string | null
+  status: string
+  status_reason: string | null
+  provider: string | null
+  attempt: number | null
+  phase: string
+  /** Earliest quota retry, null when unknown/hidden or not waiting; absent on older servers. */
+  quota_resume_at?: string | null
+  /** Set while a queued run waits for paths held by another run; absent on older servers. */
+  waiting_for_paths?: WaitingForPaths | null
+  /** The rebase risk with which auto/parallel conflict mode let this run start next to another run; an older server omits it. */
+  parallel_risk?: ConflictRisk
+  started_at: string | null
+  updated_at: string
+  pr_url: string | null
+  /** pending | merged | merge_blocked | checks_pending_timeout | failed | skipped, or null */
+  merge_status: string | null
+  /** From `/me/runs/status`; null when only the control feed answered. */
+  merge_reason: string | null
+  /** From `/me/runs/status`; null when only the control feed answered. */
+  merge_sha: string | null
+  validation_tier: string | null
+  workers: EngineWorker[]
+  tokens: number | null
+  /** API-equivalent USD at list price; null = unknown (never 0 for unknown). */
+  cost_usd: number | null
+  /** True when some execution's cost is unknown, so cost_usd is a partial sum. Absent on older servers. */
+  cost_partial?: boolean | null
+  /** The server's cost label (API-equivalent at list price). Absent on older servers. */
+  cost_label?: string | null
+  /** Latest routing decision; null before the first decision, absent on older servers. */
+  routing?: RunRouting | null
+}
+
+/** Bounded projection of a run's latest persisted routing decision. provider/model/effort are what the router REQUESTED, not
+ * proof of application (see the observed worker model in `workers`). */
+export type RunRouting = {
+  difficulty: 1 | 2 | 3 | 4 | 5
+  classification_source: 'model' | 'heuristic' | 'fallback' | null
+  provider: string | null
+  model: string | null
+  effort: string | null
+  /** Safe policy/reason text (enum words and catalog reason codes). */
+  why: string
+  /** Classification reasons; empty when the goal is hidden from the viewer or could not be redacted. */
+  reasons: string[]
+}
+
+/** branch_scope: the branches the member may target (null = unrestricted; absent from older servers). */
+export type ProjectMember = { name: string; role: string; you: boolean; active_runs: number; branch_scope?: string[] | null }
+/** members is capped (the viewer, active members and owners first); more_members counts the rest. role is the viewer's
+ * (viewer | developer | maintainer | owner); capabilities their effective rights there, absent from servers before roles. */
+export type ProjectRow = {
+  repo: string; role: string; capabilities?: string[]; active_runs: number; members: ProjectMember[]; more_members: number
+  /** pending invites: a number only when the viewer owns the project; null or absent otherwise */
+  pending_invites?: number | null
+  /** Autopilot on (auto-merge + automatic prod deploy + controller repair_merge); absent on older servers (treat as off) */
+  autopilot?: boolean
+  /** Autopilot on, but one of its three settings was changed individually since; absent on older servers (treat as false) */
+  autopilot_drifted?: boolean
+  /** the project's effective settings for this viewer, read-only, in a fixed order; absent on older servers (hooks/settings.ts) */
+  settings?: SettingEntry[]
+}
+
+/** One effective project setting (docs/contracts/control-feed.d.ts): value === default means the default is in effect. */
+export type SettingEntry = {
+  key: string; label: string; value: string | number | boolean | null; default: string | number | boolean | null
+  source: 'project' | 'org' | 'user' | 'server default'; how_to_change: string
+}
+
+export type Other = { name: string; active_runs: number; models: Record<string, number> }
+
+export type Attention = { kind: string; id?: string; text: string; url: string | null }
+
+export type Deployment = {
+  /** Absent on older servers: treat as a Swarm-triggered deployment. */
+  source?: 'swarm' | 'external'
+  outcome?: 'ok' | 'failed' | 'timeout' | null
+  /** Verified merged commit; health observation does not prove the deployed revision. */
+  merge_sha?: string | null
+  deployment_id: string
+  repo: string
+  target: string
+  status: string
+  /** queued | awaiting_approval | deploying | verifying | outcome_unknown | done | failed */
+  phase: string | null
+  pipeline_url: string | null
+  reason: string | null
+  /** The run that requested it; the status feed sends it, the control feed does not. */
+  run_id?: string | null
+  updated_at: string
+}
+
+export type Message = {
+  id: number
+  repo: string
+  /** Verified in-organisation email, else the sender's user id; "system" for server notices. */
+  from: string
+  from_run_id: string | null
+  body: string
+  created_at: string
+}
+
+export type Capacity = {
+  org_active: number
+  org_limit: number
+  queued: number
+  pods: number | null
+  today: { name: string; tokens: number; cost_usd: number }[]
+  models: { model: string; tokens: number }[]
+  /** Status-line total of today. Absent on older servers. cost_usd null = unknown. */
+  today_total?: { tokens: number | null; cost_usd: number | null; unknown_cost_executions?: number; partial?: boolean; cost_label?: string } | null
+  /** Token baseline per accepted deliverable (P50/P90). Absent unless the server sends it; the pane then points to swarm_cost_report. */
+  per_deliverable?: { deliverables: number; noncached_input: { p50: number | null; p90: number | null }; output: { p50: number | null; p90: number | null }; attempts: { p50: number | null; p90: number | null }; failed_work_tokens?: number | null } | null
+}
+
+/** One unfinished run in a repository's queue. title and status_reason are redacted like Run.goal (null when hidden);
+ * provider/model/effort are null when the viewer may not see them. Never account labels, billing or costs. */
+export type QueueEntry = {
+  /** 1-based within the repo: active runs first (oldest first), then queued runs in path-wait start order */
+  position: number
+  run_id: string
+  title: string | null
+  /** running | verifying | waiting_quota | the awaiting-approval status as stored | queued */
+  status: string
+  status_reason: string | null
+  requester: string | null
+  /** the viewer requested it */
+  mine: boolean
+  provider: string | null
+  model: string | null
+  effort: string | null
+  /** set for queued runs waiting for paths held by another run */
+  waiting_for_paths: WaitingForPaths | null
+  /** waiting_quota: when it retries; else null */
+  retry_at: string | null
+  /** the run's created_at (age = now - since) */
+  since: string
+}
+
+/** entries is capped at 20; more counts the unfinished runs beyond them */
+export type RepoQueue = { repo: string; entries: QueueEntry[]; more: number }
+
+/** only repos with at least one unfinished run, capped at 10; more_repos counts the rest */
+export type Queue = { repos: RepoQueue[]; more_repos: number }
+
+/** Seconds per stage; stages with count 0 are omitted. A single run's stage has count 1 and p50 = p90 = its seconds. */
+export interface ControlSpeedStage { stage: string; count: number; p50: number; p90: number }
+/** One of the viewer's OWN recent runs; deploy only when the viewer may view that project's deploys; url = absolute run timings page
+ *  where the viewer may view the project's stage statistics, else the project page. */
+export interface ControlSpeedRun {
+  run_id: string
+  repo: string
+  outcome: string
+  total_seconds: number
+  stages: ControlSpeedStage[]
+  deploy: { seconds: number | null; status: string; environment: string | null } | null
+  url: string
+}
+/** Over the projects the viewer may view stage statistics for; url = organisation speed or project timings. */
+export interface ControlSpeedAggregate { runs: number; stages: ControlSpeedStage[]; url: string | null }
+/** run_id is null for other users' runs; url = run timings for own runs (where the viewer may view stage statistics, else the project page), project timings for others. Never the wait detail. */
+export interface ControlSpeedWait { stage: string; seconds: number; repo: string; own: boolean; run_id: string | null; url: string }
+export interface ControlSpeedProject { project_id: string; repo: string; runs: number; p50: number; p90: number; url: string }
+/** Run speed over the window (ISO since/until). runs: the viewer's own, max 5; aggregate, top_waits and slow_projects (max 5 each)
+ * cover authorized projects only; org_url only for organisation owners/admins. */
+export interface ControlSpeed {
+  window_days: number
+  since: string
+  until: string
+  runs: ControlSpeedRun[]
+  aggregate: ControlSpeedAggregate | null
+  top_waits: ControlSpeedWait[]
+  slow_projects: ControlSpeedProject[]
+  org_url: string | null
+}
+
+export type Feed = {
+  /** Which feed drew the runs: the control feed, the basic status feed, or none yet. */
+  source: 'control' | 'status' | null
+  accounts: Account[]
+  runs: Run[]
+  others: Other[]
+  attention: Attention[]
+  deployments: Deployment[]
+  /** The last 24 h of project messages, newest first (from `/me/runs/status`). */
+  messages: Message[]
+  capacity: Capacity | null
+  /** The organisation pool switch; null on a server older than the pool field, or from the status feed. */
+  pool: { enabled: boolean } | null
+  /** Every project of the organisation the viewer is a member of, idle ones included; null on a server older than the
+   * projects field, or from the status feed (the pane then lists runs only). */
+  projects: ProjectRow[] | null
+  /** Unfinished runs per readable repository (control feed only); absent on older servers (treat as empty). */
+  queue?: Queue
+  /** Latest published plugin version known to the server; absent or null when unknown. */
+  plugin_latest?: string | null
+  /** Run speed (control feed only); null = no organisation / nothing authorized / telemetry unavailable; absent on older servers. */
+  speed?: ControlSpeed | null
+  error: string | null
+  checkedAt: string | null
+}
+
+declare module 'claude-code' {
+  interface PluginState {
+    'swarm2': { feed: Shaped<Feed>; frame: number; localEdits: boolean; settingsOpen: string[] }
+  }
+}

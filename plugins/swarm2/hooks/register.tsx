@@ -4,11 +4,14 @@ import { checkpointStop } from './checkpoint-reminder'
 import type { EngineInterface, Register } from 'claude-code'
 
 import { parseLocalCommand, PLAN_ONLY_REFUSED_MESSAGE, PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE } from './guard'
-import { configureConnection, connectionNamespace, connectionScope, fetchWithToken, setConfiguredToken, setSessionOverride, tokenCandidates } from './connection'
+import {
+  configureConnection, connectionContext, connectionNamespace, connectionScope, fetchWithToken, getSessionToken, setConfiguredToken,
+  setSessionOverride, setSessionToken, tokenCandidates,
+} from './connection'
 import { isTransient, PollLifecycle } from './poll-lifecycle'
 import type { Attempt } from './poll-lifecycle'
 import { STORED_SCOPE_KEY, STORED_TOKEN_KEY, retryWithNextCandidate } from './token-selection'
-import { MIGRATION_REQUIRED_MESSAGE, SECURE_TOKEN_KEY, migratePlainToken, saveTokenSecurely } from './token-storage'
+import { MIGRATION_REQUIRED_MESSAGE, migratePlainToken, saveTokenSecurely } from './token-storage'
 import { guardToolCall, initGuard, isEnvOverride, isLocalOn, rememberProjects, reportGuard, setLocal } from './guard-hook'
 import { lastReportAck, setPluginVersion } from './plugin-report'
 import { buildDoctorReport, formatDoctorReport, gatherDoctor } from './doctor'
@@ -29,7 +32,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.74'
+export const PLUGIN_VERSION = '0.6.90'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -86,7 +89,9 @@ let life: PollLifecycle | null = null
 let commandsRegistered = false
 
 function lifecycle($: EngineInterface): PollLifecycle {
-  life ??= new PollLifecycle({ now: () => Date.now(), timers: $.clock, clearPrivate: forgetIdentity })
+  // the host's timers, each spelled $.clock.<call>(...) at its call site (the validator refuses $.clock passed as a value)
+  const timers = { after: (ms: number, fn: () => void) => $.clock.after(ms, fn), every: (ms: number, fn: () => void) => $.clock.every(ms, fn) }
+  life ??= new PollLifecycle({ now: () => Date.now(), timers, clearPrivate: forgetIdentity })
   return life
 }
 
@@ -397,7 +402,8 @@ function anyActive(f: Feed): boolean {
 
 function setSpinner($: EngineInterface, on: boolean): void {
   if (on && !spinner) {
-    spinner = $.clock.every(SPIN_MS, () => void update($, frame, n => (n + 1) % FRAMES.length)) ?? null
+    // a tick after the module unloaded is refused by the host (2.1.332): that frame is dropped, never an unhandled rejection
+    spinner = $.clock.every(SPIN_MS, () => update($, frame, n => (n + 1) % FRAMES.length).catch(() => {})) ?? null
     lifecycle($).track(spinner)
   }
   if (!on && spinner) {
@@ -535,7 +541,7 @@ export const register: Register = (on, options) => {
   // the base URL and configured token, shared with the guard's override report and the plugin report (connection.ts)
   const connection = configureConnection(options)
   const { base } = connection
-  let { token } = connection // updated when /swarm2-token saves a verified value
+  let { token } = connection // the configured token; updated when the migration activates a verified secure copy
   setPluginVersion(PLUGIN_VERSION)
 
   on('classic.Stop', ($, e, next) => captureStop(
@@ -544,7 +550,6 @@ export const register: Register = (on, options) => {
   ))
 
   on('session.start', async ($, e, next) => {
-    setSessionOverride(false) // an override is session-scoped; a persisted value from an earlier session never outranks the setting
     await $.command.register({ name: 'swarm2', description: 'Show the Swarm2 control pane' })
     await $.command.register({ name: 'swarm2-token', description: 'Save the read-only Swarm2 status token (s2s_…), or "clear"' })
     await $.command.register({ name: 'swarm2-local', description: 'Allow (on) or block (off, the default) local edits to Swarm2 repos in this session' })
@@ -552,7 +557,11 @@ export const register: Register = (on, options) => {
     commandsRegistered = true
     await initGuard($)
     // a plain-text token from an older version moves to secure storage; until it can, the person is asked to re-enter it
-    const migration = await migratePlainToken($)
+    // (only a token of this origin and profile, and never over a configured token that outranks it)
+    const migration = await migratePlainToken($, { ...connectionContext(), configured: token }, migrated => {
+      token = migrated
+      setConfiguredToken(migrated)
+    })
     if (migration === 'migration_required') $.ui.toast(MIGRATION_REQUIRED_MESSAGE)
     void $.ui.open({ id: PANE, title: TITLE })
     disposePoll() // a session that starts again (/clear, resume) never keeps the previous one's timers
@@ -570,21 +579,23 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'swarm2-token' }, async ($, e) => {
     const value = e.args.trim()
     if (value === 'clear') {
+      // removes what /swarm2-token saved, never the configured setting: that one is used again
       await $.store.delete(STORED_TOKEN_KEY)
       await $.store.delete(STORED_SCOPE_KEY)
-      const cleared = await $.config.set({ key: SECURE_TOKEN_KEY, value: '' }).catch(() => ({ deny: 'error' }))
-      if (cleared.deny === undefined) { token = ''; setConfiguredToken('') }
+      // the save in this session replaced the sensitive option; it gets the configured value back
+      const restored = !getSessionToken() || await saveTokenSecurely($, token) === 'saved'
+      setSessionToken('')
       setSessionOverride(false)
       await poll($, token, base)
-      return { text: 'Swarm2 status token removed.' }
+      if (!restored) return { text: 'Swarm2 status token removed for this session, but secure storage still holds it: change it in /config (Swarm2 status token).' }
+      return { text: `Swarm2 status token removed.${token ? ' The status token configured in /config is used.' : ''}` }
     }
     if (!/^s2s_[A-Za-z0-9_-]{16,}$/.test(value)) {
       return { text: `Usage: /swarm2-token s2s_… (create a read-only token at ${base}/me/status-tokens), or /swarm2-token clear` }
     }
     // stored only in the sensitive option (secure storage), never in the plain store; unverified means re-enter it masked
     if (await saveTokenSecurely($, value) !== 'saved') return { text: MIGRATION_REQUIRED_MESSAGE }
-    token = value
-    setConfiguredToken(value)
+    setSessionToken(value)
     await poll($, token, base)
     return { text: 'Swarm2 status token saved; the Swarm2 pane now updates every 5 s.' }
   })

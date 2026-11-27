@@ -18,12 +18,25 @@ let profile = DEFAULT_PROFILE
 let configuredAtLoad = false
 /** Set when /swarm2-token saved a value in THIS session: only then does the stored token outrank the configured option. */
 let sessionOverride = false
+/** The token /swarm2-token saved (verified, in secure storage) in THIS session: tried first, the configured option after it. */
+let sessionToken = ''
 
-/** register.tsx: the base URL and the configured status token of the plugin options. Returns what it kept. */
+/**
+ * register.tsx: the base URL and the configured status token of the plugin options. Returns what it kept. A new
+ * configuration (another base or profile, or another configured token) drops the token /swarm2-token saved and its
+ * override: that one belonged to the previous configuration and is never sent to this one.
+ */
 export function configureConnection(options: { baseUrl?: unknown; statusToken?: unknown; profile?: unknown }): { base: string; token: string } {
-  configured = typeof options.statusToken === 'string' ? options.statusToken.trim() : ''
-  base = String(options.baseUrl || DEFAULT_BASE).replace(/\/+$/, '')
-  profile = normalizeProfile(options.profile)
+  const nextConfigured = typeof options.statusToken === 'string' ? options.statusToken.trim() : ''
+  const nextBase = String(options.baseUrl || DEFAULT_BASE).replace(/\/+$/, '')
+  const nextProfile = normalizeProfile(options.profile)
+  if (!configuredAtLoad || nextBase !== base || nextProfile !== profile || nextConfigured !== configured) {
+    sessionOverride = false
+    sessionToken = ''
+  }
+  configured = nextConfigured
+  base = nextBase
+  profile = nextProfile
   configuredAtLoad = true
   return { base, token: configured }
 }
@@ -35,12 +48,27 @@ export function resetConnection(): void {
   profile = DEFAULT_PROFILE
   configuredAtLoad = false
   sessionOverride = false
+  sessionToken = ''
 }
 
 export function setSessionOverride(value: boolean): void { sessionOverride = value }
 
-/** register.tsx: the token /swarm2-token just saved (verified) in the sensitive option, which the load-time options predate. */
+/** register.tsx: the configured token, when the migration activated a verified secure copy the load-time options predate. */
 export function setConfiguredToken(value: string): void { configured = value.trim() }
+
+/**
+ * register.tsx: the token /swarm2-token just saved (verified) in the sensitive option, or '' when /swarm2-token clear drops
+ * it. A saved token is this session's override; a cleared one ends it.
+ */
+export function setSessionToken(value: string): void {
+  sessionToken = value.trim()
+  sessionOverride = sessionToken !== ''
+}
+
+export function getSessionToken(): string { return sessionToken }
+
+/** The service the token belongs to: base URL and profile (the migration's eligibility, token-storage.ts). */
+export function connectionContext(): { base: string; profile: string } { return { base, profile } }
 
 /** The namespace of this service's state (origin + profile; never the token). */
 export function connectionNamespace(): string { return stateNamespace(base, profile) }
@@ -49,13 +77,19 @@ export function connectionNamespace(): string { return stateNamespace(base, prof
 export function connectionScope(): { origin: string; profile: string } { return { origin: originOf(base), profile } }
 
 /**
- * Token candidates in order (token-selection.ts selectTokens): the one selection the poll and postToSwarm2 share. The
- * store is re-read every time (another session may have rotated it).
+ * Token candidates in order (token-selection.ts selectTokens), with the token /swarm2-token saved in this session: first
+ * while its override holds, else right after the configured one (a fallback). The one selection the poll and
+ * postToSwarm2 share. The store is re-read every time (another session may have rotated it).
  */
 export async function tokenCandidates($: EngineInterface, configuredToken: string = configured): Promise<string[]> {
   const read = async (key: string): Promise<unknown> => { try { return await $.store.get(key) } catch { return null } }
   const [token, scope, profiles] = await Promise.all([read(STORED_TOKEN_KEY), read(STORED_SCOPE_KEY), read(STORED_PROFILES_KEY)])
-  return selectTokens({ base, profile, configured: configuredToken, sessionOverride }, { token, scope, profiles })
+  const selected = selectTokens({ base, profile, configured: configuredToken, sessionOverride }, { token, scope, profiles })
+  if (!sessionToken || !originOf(base)) return selected
+  const head = configuredToken.trim()
+  const ordered = sessionOverride ? [sessionToken, ...selected]
+    : selected[0] === head && head ? [head, sessionToken, ...selected.slice(1)] : [sessionToken, ...selected]
+  return [...new Set(ordered)]
 }
 
 /**

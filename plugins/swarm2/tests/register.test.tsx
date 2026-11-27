@@ -1,6 +1,12 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { ConfigRow, On } from 'claude-code'
+
+import { flushPluginReports } from '../hooks/plugin-report'
+import { PLUGIN_VERSION } from '../hooks/register'
+
+// the host test runtime's timer, reached through globalThis (the plugin's type contract declares no ambient globals)
+const sleep = (ms: number) => new Promise(r => (globalThis as unknown as { setTimeout: (f: (v?: unknown) => void, ms: number) => unknown }).setTimeout(r, ms))
 
 const PANE = {
   plugin: 'swarm2',
@@ -66,6 +72,8 @@ type Server = {
   status: Record<string, unknown>
   /** Every request the pane made, when the test wants them. */
   calls?: { url: string; authorization: unknown }[]
+  /** Every plugin report (/me/plugin/report) the plugin sent, when the test wants them. */
+  reports?: { url: string; authorization: unknown }[]
 }
 
 function json(body: unknown, status = 200) {
@@ -74,18 +82,34 @@ function json(body: unknown, status = 200) {
 
 type Answerer = (url: string, authorization: string, store: Map<string, unknown>) => ReturnType<typeof json> | undefined
 
+/** The `/config` row of the sensitive statusToken field as the host keeps it: `$.config.set` writes it, `list` reads it back. */
+function statusTokenRow(value = ''): ConfigRow {
+  return { key: 'swarm2.statusToken', label: 'Swarm2 status token', kind: 'text', value, provider: { plugin: 'swarm2', tier: 'user' }, isLocked: false }
+}
+
 function engine(
   on: On, server: Server, toasts: string[] = [], stored: string | null = 's2s_testtokentesttokentest',
   answer?: Answerer, store = new Map<string, unknown>(stored ? [['statusToken', stored]] : []),
+  config = new Map<string, ConfigRow>([['swarm2.statusToken', statusTokenRow()]]),
+  /** true: the test's mock.clock answers $.clock; otherwise every clock.every is a no-op */
+  mockClock = false,
 ) {
-  on('command.register', () => ({ value: { command: 'x' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  const seen = { registered: [] as string[], opened: [] as string[] }
+  on('config.list', () => ({ value: [...config.values()] }))
+  on('config.set', (_, e) => {
+    const row = config.get(e.key)
+    if (!row) return { deny: `no row ${e.key}` }
+    config.set(e.key, { ...row, value: e.value })
+    return { value: e.value }
+  })
+  on('command.register', (_, e) => { seen.registered.push(e.name); return { value: { command: e.name } } })
+  on('ui.open', (_, e) => { seen.opened.push(e.id); return { value: { isPlaced: true } } })
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', (_, e) => {
     toasts.push(e.text)
     return { value: undefined }
   })
-  on('clock.every', () => ({ value: undefined }))
+  if (!mockClock) on('clock.every', () => ({ value: undefined }))
   on('store.get', (_, e) => ({ value: (store.get(e.key) ?? null) as never }))
   on('store.set', (_, e) => {
     store.set(e.key, e.value)
@@ -97,7 +121,10 @@ function engine(
   })
   on('http.fetch', (_, e) => {
     // the plugin report (plan_only client gate) runs in the background; pane tests count only the feed requests
-    if (e.url.endsWith('/me/plugin/report')) return json({ ok: true })
+    if (e.url.endsWith('/me/plugin/report')) {
+      server.reports?.push({ url: e.url, authorization: (e.init?.headers as Record<string, string> | undefined)?.authorization })
+      return json({ ok: true })
+    }
     server.calls?.push({ url: e.url, authorization: (e.init?.headers as Record<string, string> | undefined)?.authorization })
     const custom = answer?.(e.url, String((e.init?.headers as Record<string, string> | undefined)?.authorization), store)
     if (custom) return custom
@@ -106,6 +133,7 @@ function engine(
     return json(null, 404)
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  return seen
 }
 
 /** Runs a slash command as the person typing it at the prompt does. */
@@ -128,6 +156,33 @@ test('the control feed fills every section, messages from the status feed', asyn
     expect(await ui.find({ type: 'Text', text: /basic feed/ })).toBeUndefined()
     await ui.unmount()
   }
+})
+
+// The host lifecycle end to end: the poll and the spinner run on $.clock (the kit's clock here), and session.end leaves none.
+test('session.start registers /swarm2, the command opens and draws the pane, the feed polls on the clock, session.end cancels it', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.now() })
+  const server: Server = { control: CONTROL, status: { runs: [statusRun()], deployments: [], messages: [] }, calls: [] }
+  const { registered, opened } = engine(on, server, [], undefined, undefined, undefined, undefined, true)
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(registered).toContain('swarm2')
+  expect((await command($, 'swarm2')).text).toBe('Swarm2 pane opened.')
+  expect(opened.filter(id => id === 'swarm2').length).toBeGreaterThanOrEqual(1)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /ACCOUNTS/)
+  // each period is one control + one status request
+  await clock.settle()
+  let before = server.calls!.length
+  await clock.advance(5000)
+  expect(server.calls!.length - before).toBe(2)
+  before = server.calls!.length
+  await clock.advance(5000)
+  expect(server.calls!.length - before).toBe(2)
+  await ui.unmount()
+  await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { id: 'sess-1' } })
+  before = server.calls!.length
+  await clock.advance(60_000)
+  expect(server.calls!.length).toBe(before)
 })
 
 test('a run shows its routing decision (requested, not observed); a run without one, or an older server, shows none', async ($, on) => {
@@ -393,7 +448,7 @@ test('the userConfig status token is used against the prod URL by default', { op
   for (const c of server.calls!) expect(c.authorization).toBe('Bearer s2s_configuredconfiguredtoken')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /● PROD/ })) ? 'found' : 'missing ● PROD').toBe('found')
-  expect((await ui.find({ type: 'Text', text: /plugin v0\.5\.3/ })) ? 'found' : 'missing plugin version').toBe('found')
+  expect((await ui.find({ type: 'Text', text: new RegExp(`plugin v${PLUGIN_VERSION.replace(/\./g, '\\.')}`) })) ? 'found' : 'missing plugin version').toBe('found')
   await ui.unmount()
 })
 
@@ -417,7 +472,7 @@ test('quota waits show NEEDS YOU, paused phase and retry time on control feed', 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await command($, 'swarm2')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  for (const text of [/NEEDS YOU/, /\[ paused \]/, /waiting for quota/, /Earliest automatic retry 2026-11-07T12:00:00Z/, /quota cooldown/, /until 2026-11-07T12:00:00Z/]) await has(ui, text)
+  for (const text of [/NEEDS YOU/, /\[ paused \]/, /waiting for quota/, /Earliest automatic retry 2026-11-07T12:00:00Z/, /cooldown ↻\d\d:\d\d/]) await has(ui, text)
   await ui.unmount()
 })
 
@@ -467,12 +522,13 @@ test('401, then the token is rotated in the store: one retry with the new token,
   const OLD = 's2s_oldoldoldoldoldoldold'
   const NEW = 's2s_newnewnewnewnewnewnew'
   const calls: NonNullable<Server['calls']> = []
-  // the server rejects the old token; a rotation (as another session's /swarm2-token would do) lands in the store mid-poll
+  // the server rejects the old token; a rotation (as an older version's /swarm2-token would do) lands in the store mid-poll.
+  // Secure storage is unavailable here (no sensitive row), so the plain copy stays the only credential and is never moved.
   engine(on, { control: CONTROL, status: EMPTY_STATUS, calls }, [], OLD, (_, auth, store) => {
     if (auth !== `Bearer ${OLD}`) return undefined
     store.set('statusToken', NEW)
     return json(null, 401)
-  })
+  }, undefined, new Map())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   // clock.every is a no-op here, so the only poll so far is the session's own: a NEW-token request proves the in-poll retry
   for (let i = 0; i < 50 && !bearers(calls).includes(`Bearer ${NEW}`); i++) await new Promise(r => (globalThis as unknown as { setTimeout: (f: (v?: unknown) => void, ms: number) => unknown }).setTimeout(r, 20))
@@ -552,6 +608,137 @@ test('a token saved in this session is tried first; when rejected, the configure
   await ui.unmount()
 })
 
+// ---- secure migration of a plain token from an older version ----
+const PROD = 'https://swarm2-mcp.netconnect.ro'
+const LEGACY = 's2s_legacylegacylegacylegacy'
+
+function migrationEngine(on: On, scope: unknown, config = new Map<string, ConfigRow>([['swarm2.statusToken', statusTokenRow()]]), toasts: string[] = []) {
+  const server: Server = { control: CONTROL, status: EMPTY_STATUS, calls: [] }
+  const store = new Map<string, unknown>([['statusToken', LEGACY], ...(scope ? [['statusTokenScope', scope] as [string, unknown]] : [])])
+  engine(on, server, toasts, null, undefined, store, config)
+  return { server, store, config, toasts }
+}
+
+test('a plain token of this origin and profile moves to secure storage, is used, and the plain copy goes', async ($, on) => {
+  const m = migrationEngine(on, { origin: PROD, profile: 'default' })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  expect(m.config.get('swarm2.statusToken')?.value).toBe(LEGACY)
+  expect(m.store.has('statusToken')).toBe(false)
+  expect(m.store.has('statusTokenScope')).toBe(false)
+  expect(bearers(m.server.calls).length).toBeGreaterThan(0)
+  expect(bearers(m.server.calls).every(b => b === `Bearer ${LEGACY}`)).toBe(true)
+  expect(m.toasts).toEqual([])
+})
+
+for (const scope of [{ origin: 'https://other.example', profile: 'default' }, { origin: PROD, profile: 'work' }]) {
+  test(`a plain token saved for ${scope.origin} profile ${scope.profile} never migrates and is never sent`, async ($, on) => {
+    const m = migrationEngine(on, scope)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await command($, 'swarm2')
+    expect(m.config.get('swarm2.statusToken')?.value).toBe('')
+    expect(m.store.get('statusToken')).toBe(LEGACY)
+    expect(m.store.get('statusTokenScope')).toEqual(scope)
+    expect(bearers(m.server.calls)).toEqual([])
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await has(ui, /No status token/)
+    await ui.unmount()
+  })
+}
+
+for (const scope of ['https://other.example#work', { origin: PROD }, { origin: PROD, profile: 7 }]) {
+  test(`a malformed plain-token scope ${JSON.stringify(scope)} is never legacy: never migrated and never sent`, async ($, on) => {
+    const m = migrationEngine(on, scope)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await command($, 'swarm2')
+    expect(m.config.get('swarm2.statusToken')?.value).toBe('')
+    expect(m.store.get('statusToken')).toBe(LEGACY)
+    expect(m.store.get('statusTokenScope')).toEqual(scope)
+    expect(bearers(m.server.calls)).toEqual([])
+  })
+}
+
+test('a session that starts again never overwrites a token saved with /swarm2-token by a leftover plain one', async ($, on) => {
+  const NEW = 's2s_newnewnewnewnewnewnewnew'
+  const m = migrationEngine(on, null)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(m.config.get('swarm2.statusToken')?.value).toBe(LEGACY)
+  expect((await command($, 'swarm2-token', NEW)).text).toContain('saved')
+  expect(m.config.get('swarm2.statusToken')?.value).toBe(NEW)
+  m.store.set('statusToken', LEGACY) // a plain copy left behind (an older version in another session wrote it again)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true }) // /clear or resume
+  expect(m.config.get('swarm2.statusToken')?.value).toBe(NEW)
+  expect(m.store.get('statusToken')).toBe(LEGACY)
+  expect(m.toasts).toEqual([])
+})
+
+test('a token saved with /swarm2-token over a configured one is still used by the next session: report and both feeds', { options: { statusToken: 's2s_old-token-1-fixture' } }, async ($, on) => {
+  const OLD = 's2s_old-token-1-fixture'
+  const NEW = 's2s_new-token-2-fixture'
+  const server: Server = { control: CONTROL, status: EMPTY_STATUS, calls: [], reports: [] }
+  const config = new Map([['swarm2.statusToken', statusTokenRow(OLD)]])
+  engine(on, server, [], null, undefined, undefined, config)
+  let sessionId = 'sess-1'
+  on('session.id', () => ({ value: sessionId }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  expect(bearers(server.calls).length).toBeGreaterThan(0)
+  expect(bearers(server.calls).every(b => b === `Bearer ${OLD}`)).toBe(true)
+  expect((await command($, 'swarm2-token', NEW)).text).toContain('saved')
+  expect(config.get('swarm2.statusToken')?.value).toBe(NEW) // written to secure storage and read back
+  await flushPluginReports()
+  await sleep(10)
+  // the second session (/clear or resume) in the same module and configuration: only its requests count
+  server.calls!.length = 0
+  server.reports!.length = 0
+  sessionId = 'sess-2' // a new session id: its plugin report is due at once
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  await flushPluginReports()
+  await sleep(10)
+  // per path: how many requests session 2 made, and how many carried a bearer other than the new one (an empty list fails)
+  const seen = (path: string) => {
+    const used = [...server.calls!, ...server.reports!].filter(c => c.url.endsWith(path)).map(c => String(c.authorization))
+    return { requests: used.length > 0, notNew: used.filter(b => b !== `Bearer ${NEW}`).length, old: used.filter(b => b === `Bearer ${OLD}`).length }
+  }
+  expect({ report: seen('/me/plugin/report'), control: seen('/me/control'), status: seen('/me/runs/status') }).toEqual({
+    report: { requests: true, notNew: 0, old: 0 }, control: { requests: true, notNew: 0, old: 0 }, status: { requests: true, notNew: 0, old: 0 },
+  })
+  expect(config.get('swarm2.statusToken')?.value).toBe(NEW)
+})
+
+test('a configured token is never overwritten to migrate a different plain one; the plain copy stays its fallback', { options: { statusToken: 's2s_configuredconfiguredtoken' } }, async ($, on) => {
+  const m = migrationEngine(on, null, new Map([['swarm2.statusToken', statusTokenRow('s2s_configuredconfiguredtoken')]]))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  expect(m.config.get('swarm2.statusToken')?.value).toBe('s2s_configuredconfiguredtoken')
+  expect(m.store.get('statusToken')).toBe(LEGACY)
+  expect(bearers(m.server.calls).every(b => b === 'Bearer s2s_configuredconfiguredtoken')).toBe(true)
+  expect(m.toasts).toEqual([])
+})
+
+test('secure storage refusing the token keeps the plain copy in use and asks for /config', async ($, on) => {
+  const m = migrationEngine(on, null, new Map())
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  expect(m.store.get('statusToken')).toBe(LEGACY)
+  expect(m.toasts.some(t => t.includes('migration_required'))).toBe(true)
+  expect(m.toasts.join('\n')).not.toContain(LEGACY)
+  expect(bearers(m.server.calls).every(b => b === `Bearer ${LEGACY}`)).toBe(true)
+})
+
+test('/swarm2-token clear without a save in this session removes the plain copy and never the configured setting', { options: { statusToken: 's2s_configuredconfiguredtoken' } }, async ($, on) => {
+  const m = migrationEngine(on, null, new Map([['swarm2.statusToken', statusTokenRow('s2s_configuredconfiguredtoken')]]))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  m.server.calls!.length = 0
+  expect((await command($, 'swarm2-token', 'clear')).text).toContain('removed')
+  expect(m.store.has('statusToken')).toBe(false)
+  expect(m.config.get('swarm2.statusToken')?.value).toBe('s2s_configuredconfiguredtoken')
+  expect(bearers(m.server.calls).length).toBeGreaterThan(0)
+  expect(bearers(m.server.calls).every(b => b === 'Bearer s2s_configuredconfiguredtoken')).toBe(true)
+})
+
 test('every candidate rejected: the message points at /swarm2-token clear', { options: { statusToken: 's2s_rejectedconfiguredrejected' } }, async ($, on) => {
   const server: Server = { control: CONTROL, status: EMPTY_STATUS, calls: [] }
   engine(on, server, [], 's2s_rejectedstoredrejectedstored', () => json(null, 401))
@@ -612,14 +799,16 @@ test('expired window, stale account, not-measured and no-figure-yet strings; an 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await command($, 'swarm2')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await has(ui, /5h last measured 3h00 ago/)
-  await has(ui, /7d expired/)
+  // an expired window has reset (#213): a 5 h one starts again on the next use, so no next reset is invented for it
+  await has(ui, /5h ✓ reset/)
+  await paneHas(ui, /5h ✓ reset · next/, false)
+  await has(ui, /7d ✓ reset · next ↻/)
   await paneHas(ui, /5h ▓|5h \?/, false)
   await has(ui, /7d .* 61%/)
   await has(ui, /stale/)
   await has(ui, /primary window/)
   await has(ui, /usage not measured for this provider/)
-  expect((await ui.findAll({ type: 'Text', text: /no usage figure yet/ })).length).toBe(2)
+  expect((await ui.findAll({ type: 'Text', text: /^no usage figure yet$/ })).length).toBe(2) // the inner Text, not the row around it
   await ui.unmount()
 })
 
@@ -656,7 +845,7 @@ test('the footer shows the latest version only when the plugin is older', async 
   await ui.unmount()
 })
 
-for (const latest of ['0.0.1', '0.6.0', 'banana', null, undefined]) {
+for (const latest of ['0.0.1', PLUGIN_VERSION, 'banana', null, undefined]) {
   test(`no latest-version suffix for plugin_latest ${String(latest)}`, async ($, on) => {
     engine(on, { control: await footer(latest), status: { runs: [], deployments: [], messages: [] } })
     await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -669,8 +858,11 @@ for (const latest of ['0.0.1', '0.6.0', 'banana', null, undefined]) {
 }
 
 test('a plugin_outdated attention item shows its text with the update command', async ($, on) => {
-  const text = 'Swarm2 plugin v0.5.3 is out of date (latest v0.6.47). Update: claude plugin update swarm2@netconnect, then /reload-plugins.'
-  engine(on, { control: await footer('0.6.47', [{ kind: 'plugin_outdated', id: 'plugin_outdated', text, url: null }]), status: { runs: [], deployments: [], messages: [] } })
+  // a latest version strictly newer than this artifact's, whatever version staging wrote into PLUGIN_VERSION
+  const [major, minor] = PLUGIN_VERSION.split('.').map(Number)
+  const latest = `${major}.${minor! + 1}.0`
+  const text = `Swarm2 plugin v${PLUGIN_VERSION} is out of date (latest v${latest}). Update: claude plugin update swarm2@netconnect, then /reload-plugins.`
+  engine(on, { control: await footer(latest, [{ kind: 'plugin_outdated', id: 'plugin_outdated', text, url: null }]), status: { runs: [], deployments: [], messages: [] } })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await command($, 'swarm2')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })

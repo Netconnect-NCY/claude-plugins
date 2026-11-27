@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { EngineInterface, On } from 'claude-code'
 
 import {
   aliasCandidate, appendAudit, BLOCK_MESSAGE, bashWriteTargets, envAllowsLocal, freshProjects, MAX_AUDIT, normalizeRemote, normalizeRemoteWithHost, parseLocalCommand, remoteHost,
@@ -8,8 +8,9 @@ import {
 } from '../hooks/guard'
 import { PLAN_ONLY_BLOCK_MESSAGE, PLAN_ONLY_REFUSED_MESSAGE, PLAN_ONLY_UNKNOWN_BLOCK_MESSAGE, PLAN_ONLY_UNKNOWN_REFUSED_MESSAGE, PROJECTS_TTL_MS as TTL } from '../hooks/guard'
 import type { LocalAuditEntry } from '../hooks/guard'
-import { resetGuardMemory, setGuardTiming, setGuardWarn } from '../hooks/guard-hook'
+import { isLocalOn, resetGuardMemory, setGuardTiming, setGuardWarn, setLocal } from '../hooks/guard-hook'
 import { resetPluginReports } from '../hooks/plugin-report'
+import { PLUGIN_VERSION } from '../hooks/register'
 
 const ctx = { cwd: '/repo', home: '/home/u' }
 const writes = (command: string, c = ctx) => bashWriteTargets(command, c)
@@ -172,6 +173,8 @@ type Host = {
   sshDelayMs?: number
   /** session.cwd throws on its first call after the session started (an internal error inside the guard) */
   cwdThrowsOnce?: boolean
+  /** what the plugin wrote with $.ui.log */
+  logs?: { text: string; to?: string }[]
 }
 
 function host(over: Partial<Host> = {}): Host {
@@ -187,6 +190,9 @@ function host(over: Partial<Host> = {}): Host {
   }
 }
 
+// the guard's deadlines are $.clock.after waits; here they pass in real time, as the host's do
+const realTimer = globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown }
+
 function engine(on: On, h: Host) {
   resetGuardMemory()
   resetPluginReports()
@@ -194,7 +200,9 @@ function engine(on: On, h: Host) {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', (_, e) => { h.logs?.push({ text: e.text, to: e.to }); return { value: undefined } })
   on('clock.every', () => ({ value: undefined }))
+  on('clock.after', (_, e) => new Promise(resolve => { realTimer.setTimeout(() => resolve({ value: undefined }), e.ms) }))
   on('http.fetch', (_, e) => {
     const raw = e as unknown as { url: string; init?: Record<string, unknown> } & Record<string, unknown>
     const init = { url: raw.url, ...(raw.init ?? raw) } as { url: string; method?: string; headers?: Record<string, string>; body?: string }
@@ -233,7 +241,8 @@ function engine(on: On, h: Host) {
     if (e.argv[0] === 'sh') return { value: { exitCode: 0, stdout: `/home/u\n${h.env ?? ''}`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[0] === 'ssh') {
       if (h.sshHang?.includes(e.argv[2] ?? '')) return new Promise(() => {}) as never
-      if (h.sshDelayMs) return new Promise(r => setTimeout(() => r({ value: { exitCode: 0, stdout: `hostname gitlab.example.org\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }), h.sshDelayMs)) as never
+      const delay = h.sshDelayMs
+      if (delay) return new Promise(r => realTimer.setTimeout(() => r({ value: { exitCode: 0, stdout: `hostname gitlab.example.org\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }), delay)) as never
       const a = h.ssh?.[e.argv[2] ?? ''] ?? 'throw'
       if (a === 'throw') throw new Error('ssh: not found')
       if (a === 'fail') return { value: { exitCode: 1, stdout: '', stderr: 'x', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -416,15 +425,18 @@ test('https remotes never trigger ssh -G', async ($, on) => {
   expect(h.ran.some(a => a[0] === 'ssh')).toBe(false)
 })
 
-// The warning itself goes to stderr of the plugin's own module instance, which a test of this kit cannot swap (setGuardWarn
-// reaches only the test's copy of the module): the outcome is what is checked here.
-test('no matching remote but a GitHub-like one lets local edits run', async ($, on) => {
-  const h = host({ remotes: { '/repo': 'origin\thttps://github.com/me/other (fetch)\nalias\tgit@work:me/x.git (fetch)\n' }, ssh: { work: 'github.com' } })
+// The host has no stderr: the warning goes to the host's debug log, once per verdict window.
+test('no matching remote but a GitHub-like one lets local edits run, with one warning in the debug log', async ($, on) => {
+  const h = host({ remotes: { '/repo': 'origin\thttps://github.com/me/other (fetch)\nalias\tgit@work:me/x.git (fetch)\n' }, ssh: { work: 'github.com' }, logs: [] })
   engine(on, h)
   await start($)
   const edit = { tool: 'Edit', file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' }
   expect(await outcome($, edit)).toBe('ran')
   expect(await outcome($, edit)).toBe('ran')
+  const warnings = h.logs!.filter(l => l.text.startsWith('swarm2 guard: no Swarm2 project matches'))
+  expect(warnings.length).toBe(1)
+  expect(warnings[0]!.to).toBe('debug')
+  expect(warnings[0]!.text).toContain('me/other')
 })
 
 test('a /swarm2-local override is reported to Swarm2 as an audit event, best-effort', async ($, on) => {
@@ -714,6 +726,41 @@ test('plan_only unknown: a git error in a .swarm2/project.yaml checkout stays fa
   expect(await verdictText($, ypEdit)).toBe(BLOCK_MESSAGE)
 })
 
+// The kit's clock.after models the wait, so a host whose $.clock.after itself throws is a hand-made $ calling setLocal.
+function clocklessHost(cwd: string, files: string[], store: Map<string, unknown>): EngineInterface {
+  const state = new Map<string, unknown>()
+  const $ = {
+    clock: { after: () => { throw new Error('no timer') }, every: () => { throw new Error('no timer') } },
+    session: { id: async () => 'sess-1', cwd: async () => cwd },
+    state: { get: async (k: { key: string }) => ({ value: state.get(k.key) }), set: async (k: { key: string }, v: unknown) => { state.set(k.key, v) } },
+    store: { get: async (k: string) => store.get(k) ?? null, set: async (k: string, v: unknown) => { store.set(k, v) } },
+    fs: {
+      exists: async (path: string) => files.includes(path),
+      stat: async (path: string) => { if (!files.includes(path)) throw new Error('ENOENT'); return { kind: 'dir', realPath: path } },
+    },
+    process: { run: async () => { throw new Error('git: not found') } },
+    http: { fetch: async () => ({ status: 202, ok: true, headers: {}, text: '' }) },
+    ui: { log: () => {} },
+  }
+  return $ as unknown as EngineInterface
+}
+
+test('a host clock that cannot start the override report deadline never breaks the override', async () => {
+  resetGuardMemory()
+  const store = new Map<string, unknown>()
+  expect(await setLocal(clocklessHost('/tmp', ['/', '/tmp'], store), 'on')).toBe('applied')
+  expect((store.get('localEditsAudit') as LocalAuditEntry[]).map(e => e.action)).toEqual(['applied'])
+})
+
+test('plan_only unknown: a host clock that cannot start the override report deadline still refuses the override', async () => {
+  resetGuardMemory()
+  const store = planOnlyStore('developer')
+  const $ = clocklessHost('/yp', ['/', '/yp', '/yp/.git', '/yp/.swarm2', '/yp/.swarm2/project.yaml'], store)
+  expect(await setLocal($, 'on')).toBe('refused_unknown')
+  expect((store.get('localEditsAudit') as LocalAuditEntry[]).map(e => e.action)).toEqual(['refused'])
+  expect(await isLocalOn($)).toBe(false)
+})
+
 test('a fork remote is accepted once a fresh feed holds no plan_only project the viewer does not own', async ($, on) => {
   const h = yamlHost({ store: planOnlyStore('owner') }, 'origin\thttps://github.com/me/app-renamed (fetch)\n')
   engine(on, h)
@@ -780,7 +827,7 @@ test('the plugin reports version and guard state at session start, once per wind
   engine(on, h)
   await start($)
   await settle(h, 1)
-  expect(h.reports).toEqual([{ auth: 'Bearer s2s_test', body: { client: 'claude-code', plugin_version: '0.6.0', guard: 'on', session: 'sess-1' } }])
+  expect(h.reports).toEqual([{ auth: 'Bearer s2s_test', body: { client: 'claude-code', plugin_version: PLUGIN_VERSION, guard: 'on', session: 'sess-1' } }])
   for (let i = 0; i < 3; i++) await outcome($, { tool: 'Read', file_path: '/repo/src/a.ts' })
   await command($, 'swarm2')
   await settle(h, 2)

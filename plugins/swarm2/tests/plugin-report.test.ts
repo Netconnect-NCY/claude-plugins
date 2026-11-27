@@ -34,10 +34,20 @@ test('a report is due first, on a guard change, after the interval, sooner after
 
 // ---- against a fake fetch (the module as this test file imports it, with a hand-made $) ----
 
-type Fake = { posts: { url: string; auth?: string; body: unknown }[]; status: number; mode?: 'throw' | 'hang'; token?: string | null }
+type Fake = { posts: { url: string; auth?: string; body: unknown }[]; status: number; mode?: 'throw' | 'hang'; token?: string | null; clockThrows?: boolean }
+
+// the report timeout is a $.clock.after on the host; here it runs on the test environment's own timer
+const timers = globalThis as unknown as { setTimeout: (f: () => void, ms: number) => unknown; clearTimeout: (id: unknown) => void }
 
 function fake(f: Fake): EngineInterface {
   const $ = {
+    clock: {
+      after: (ms: number, fn: () => void) => {
+        if (f.clockThrows) throw new Error('no timer')
+        const id = timers.setTimeout(fn, ms)
+        return { cancel: () => timers.clearTimeout(id) }
+      },
+    },
     session: { id: async () => 'sess-9' },
     store: { get: async (key: string) => (key === 'statusToken' ? (f.token === undefined ? 's2s_reporttoken' : f.token) : null) },
     http: {
@@ -130,4 +140,22 @@ test('a hung server never holds the caller past the report timeout, and the call
   expect(took).toBeGreaterThanOrEqual(REPORT_TIMEOUT_MS - 50)
   expect(took).toBeLessThan(REPORT_TIMEOUT_MS + 1500)
   expect(f.posts.length).toBe(1)
+})
+
+test('a host clock that cannot start the report timeout never leaves the report in flight: a later report retries', async () => {
+  const f: Fake = { posts: [], status: 202, clockThrows: true }
+  const $ = fake(f)
+  let t = 5_000_000
+  setup(() => t)
+  await reportPluginState($, true) // the timer throws: swallowed, counted as a failed report
+  expect(f.posts).toEqual([])
+  t += REPORT_RETRY_MS - 1
+  f.clockThrows = false
+  await reportPluginState($, true) // a failure, not in flight: only the retry window holds it back
+  expect(f.posts).toEqual([])
+  t += 1
+  await reportPluginState($, true)
+  expect(f.posts.length).toBe(1)
+  await reportPluginState($, false) // a guard change after the retry is sent at once
+  expect(f.posts.map(p => (p.body as { guard: string }).guard)).toEqual(['on', 'off'])
 })

@@ -38,6 +38,21 @@ function str(v: unknown): string {
 }
 
 /**
+ * The stored /swarm2-token value when it belongs to this origin and profile, else ''. A legacy value without a scope was
+ * saved through /swarm2-token for the configured service, so it counts as this origin and profile; one saved for another
+ * origin or profile is never this service's own. Only an absent scope is legacy (the host store reads a missing key as
+ * null): a scope that is present but malformed names no service, so its token is never this one's. Selection and the
+ * secure-storage migration share this rule.
+ */
+export function ownStoredToken(cfg: { base: string; profile: string }, stored: StoredTokens): string {
+  const origin = originOf(cfg.base)
+  const legacy = stored.scope === undefined || stored.scope === null
+  const scope = asScope(stored.scope)
+  const own = legacy || (scope !== null && scope.origin === origin && scope.profile === cfg.profile)
+  return origin && str(stored.token) && own ? str(stored.token) : ''
+}
+
+/**
  * Token candidates in order, distinct and non-empty. First the configured option and the stored /swarm2-token value of
  * this origin and profile (the stored one first only when saved in this session); then tokens saved for other profiles
  * of the SAME origin. A stored value saved for another origin is never a candidate. A legacy stored value without a
@@ -46,8 +61,7 @@ function str(v: unknown): string {
 export function selectTokens(cfg: SelectionConfig, stored: StoredTokens): string[] {
   const origin = originOf(cfg.base)
   if (!origin) return []
-  const scope = asScope(stored.scope)
-  const own = str(stored.token) && (!scope || (scope.origin === origin && scope.profile === cfg.profile)) ? str(stored.token) : ''
+  const own = ownStoredToken(cfg, stored)
   const ordered = cfg.sessionOverride ? [own, cfg.configured] : [cfg.configured, own]
   if (Array.isArray(stored.profiles)) {
     for (const entry of stored.profiles) {

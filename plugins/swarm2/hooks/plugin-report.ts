@@ -7,6 +7,8 @@
 import type { EngineInterface } from 'claude-code'
 
 import { connectionNamespace, postToSwarm2 } from './connection'
+import { deadline } from './deadline'
+import type { Deadline } from './deadline'
 
 export const PLUGIN_REPORT_PATH = '/me/plugin/report'
 /** A successful report is repeated this often while the session works (the server's "recent" window defaults to 15 min). */
@@ -79,12 +81,13 @@ async function send($: EngineInterface, guard: GuardState): Promise<void> {
   if (!reportDue(memory.get(key), guard, now)) return
   const entry: ReportMemory = { at: now, guard, ok: false, inflight: true }
   memory.set(key, entry)
-  let timer: ReturnType<typeof setTimeout> | undefined
+  // the timer is built inside the try: a host clock that throws still clears inflight, so a later report retries
+  let timeout: Deadline<boolean> | undefined
   try {
-    const timeout = new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), REPORT_TIMEOUT_MS) })
-    entry.ok = await Promise.race([postToSwarm2($, PLUGIN_REPORT_PATH, reportBody(version, guard, session)), timeout])
+    timeout = deadline($, REPORT_TIMEOUT_MS, false)
+    entry.ok = await Promise.race([postToSwarm2($, PLUGIN_REPORT_PATH, reportBody(version, guard, session)), timeout.promise])
   } catch { entry.ok = false } finally {
-    clearTimeout(timer)
+    timeout?.cancel()
     entry.inflight = false
     entry.at = clock()
   }

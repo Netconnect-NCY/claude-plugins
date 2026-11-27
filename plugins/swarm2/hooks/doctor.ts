@@ -5,6 +5,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import { connectionScope } from './connection'
+import { deadline } from './deadline'
 
 export const UNKNOWN = 'unknown'
 export const SKILL_NAME = 'working-with-swarm2'
@@ -140,16 +141,16 @@ async function attempt<T>(fn: () => Promise<T>): Promise<T | null> {
 
 /** Reads the public readiness route of the configured service: no credential, no retry. */
 export async function checkReadiness($: EngineInterface, base: string): Promise<Readiness> {
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let timeout: { promise: Promise<null>; cancel: () => void } | undefined
   try {
-    const timeout = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), READINESS_TIMEOUT_MS) })
-    const res = await Promise.race([$.http.fetch(`${base}${READINESS_PATH}`, { method: 'GET' }), timeout])
+    timeout = deadline($, READINESS_TIMEOUT_MS, null)
+    const res = await Promise.race([$.http.fetch(`${base}${READINESS_PATH}`, { method: 'GET' }), timeout.promise])
     if (!res || !res.status) return { checked: true, status: 'unreachable', http: null }
     return { checked: true, status: res.ok ? 'ready' : 'not ready', http: res.status }
   } catch {
     return { checked: true, status: 'unreachable', http: null }
   } finally {
-    clearTimeout(timer)
+    timeout?.cancel()
   }
 }
 
@@ -180,9 +181,9 @@ export async function gatherDoctor($: EngineInterface, ctx: DoctorContext): Prom
     hostName: null, // no host API names the host application
     hostVersion: version?.version ?? null,
     surfaces: surfaces ?? null,
-    pluginName: $.plugin?.name ?? null,
+    pluginName: $.plugin.name,
     pluginVersion: ctx.pluginVersion,
-    packageName: $.plugin?.name ?? null,
+    packageName: $.plugin.name,
     packageVersion: ctx.pluginVersion,
     skillName: SKILL_NAME,
     skillVersion: null, // the skill declares no version
