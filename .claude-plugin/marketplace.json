@@ -87,7 +87,7 @@
     {
       "name": "sunday",
       "source": "./plugins/sunday",
-      "description": "The Sunday (sunday.work) MCP connection: tickets, projects, reports, leaves, overtime and evaluations from your AI. Install, authenticate, sign in with your NetConnect account; you act as yourself with your own Sunday rights. Works in Claude Code, Claude Desktop and Codex.",
+      "description": "Sunday MCP and the working-with-sunday skill: tickets, projects and reports with your own NetConnect SSO account and Sunday rights. Includes Claude and portable Codex/OpenAI packaging. See the Sunday README for the separate ChatGPT web cloud-connection setup.",
       "homepage": "https://sunday.work/how-tickets-work",
       "category": "productivity",
       "tags": [
