@@ -46,6 +46,14 @@ package from your organization's NetConnect plugin distribution when supported.
 Connect with NetConnect SSO. If the installed entry says **Desktop only**, follow
 the web connection procedure above to make Sunday available in ChatGPT web.
 
+After importing `https://github.com/Netconnect-NCY/claude-plugins` as the
+`netconnect-claude-plugins` marketplace in your desktop client, use
+[Install Sunday in Desktop](codex://plugins/install/sunday?marketplace=netconnect-claude-plugins).
+This shortcut requires the marketplace to be known already; if the marketplace
+or plugin cannot be found, it opens the Plugins page instead. It opens the
+desktop installation flow, not a ChatGPT web installation. See the official
+[plugin install link documentation](https://learn.chatgpt.com/docs/app/commands#plugin-install).
+
 ## Codex CLI
 
 Install the plugin after adding its marketplace:
