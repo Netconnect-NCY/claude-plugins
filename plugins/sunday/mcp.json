@@ -1,0 +1,26 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "sunday": {
+      "type": "streamable-http",
+      "url": "https://sunday.work/api/v1/mcp/rpc",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "authorizationUrl": "https://auth.netconnect.ro/auth/realms/netconnect/protocol/openid-connect/auth",
+            "tokenUrl": "https://auth.netconnect.ro/auth/realms/netconnect/protocol/openid-connect/token",
+            "resource": "https://sunday.work/api/v1/mcp/rpc",
+            "baseScopes": ["offline_access"],
+            "defaultScopes": ["openid", "profile", "email"],
+            "client": {
+              "mode": "provided",
+              "clientId": "sunday-mcp",
+              "tokenEndpointAuthMethod": "none"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,8 +1,20 @@
 {
   "name": "sunday",
   "description": "Connects your AI to Sunday (sunday.work), NetConnect's work management system: tickets, projects, reports, leaves, overtime, evaluations. Sign in with your NetConnect account; you act as yourself with your own Sunday rights.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": { "name": "Netconnect-NCY", "url": "https://github.com/Netconnect-NCY" },
   "homepage": "https://sunday.work/how-tickets-work",
-  "mcpServers": "./.mcp.json"
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Sunday",
+    "shortDescription": "Manage work in Sunday",
+    "longDescription": "Find tickets, inspect projects and reports, and make requested updates in Sunday. Connect with NetConnect SSO; available tools and data follow your Sunday account's permissions.",
+    "developerName": "NetConnect",
+    "category": "Productivity",
+    "websiteURL": "https://sunday.work/",
+    "defaultPrompt": [
+      "Show my open Sunday tickets and blockers.",
+      "Find the status and recent updates of a Sunday ticket."
+    ]
+  }
 }

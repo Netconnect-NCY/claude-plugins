@@ -14,6 +14,20 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Productivity"
+    },
+    {
+      "name": "sunday",
+      "version": "1.1.0",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/Netconnect-NCY/claude-plugins.git",
+        "path": "plugins/sunday"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
     }
   ]
 }
