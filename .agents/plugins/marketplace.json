@@ -3,7 +3,7 @@
   "plugins": [
     {
       "name": "swarm2",
-      "version": "0.6.116",
+      "version": "0.6.124",
       "source": {
         "source": "git-subdir",
         "url": "https://github.com/Netconnect-NCY/claude-plugins.git",
