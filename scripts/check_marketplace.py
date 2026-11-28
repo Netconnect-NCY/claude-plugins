@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 
 
 CATALOG_URL = "https://github.com/Netconnect-NCY/claude-plugins.git"
-REQUIRED_PRODUCTS = {"swarm2", "sunday", "ssh-fleet", "ssh-fleet-connect", "golden-path", "odoo"}
+REQUIRED_PRODUCTS = {"swarm2", "sunday", "ssh-fleet", "ssh-fleet-connect", "golden-path", "odoo", "netconnect"}
 CATALOGS = {
     "claude_code": ("netconnect", ".claude-plugin/marketplace.json"),
     "codex": ("netconnect-claude-plugins", ".agents/plugins/marketplace.json"),

@@ -16,6 +16,37 @@ The different names are intentional. Use the name for your client in installatio
 commands; a plugin installed by Codex CLI does not automatically become a ChatGPT
 web cloud connection.
 
+## Start with guided setup
+
+The optional **NetConnect Setup** plugin helps you choose the services you need,
+reuse existing connections, complete each service's sign-in, and verify a small
+read operation. It contains one shared setup skill and no MCP connection or
+automatic install-all action.
+
+In Claude Code, after adding the catalog, run:
+
+```text
+/plugin install netconnect@netconnect
+/netconnect:setup
+```
+
+In Codex CLI, after adding the catalog, run:
+
+```bash
+codex plugin add netconnect@netconnect-claude-plugins
+```
+
+Then ask a session that has loaded the plugin: **“Help me connect the NetConnect
+services I need.”** Clients that expose the package's **Setup** action use the
+same skill. In ChatGPT, select **NetConnect Setup** when a verified imported or
+published entry is available in your account or workspace. See the
+[setup package guide](plugins/netconnect/README.md).
+
+Setup reports package availability, authentication, acting identity and a tested
+operation separately. Each service retains its own permissions and connection
+flow. The plugin does not publish cloud apps, grant repository access or make a
+connection in one client available in another.
+
 ## Available packages and prerequisites
 
 The [maintainer inventory](catalog/plugin-readiness.json) is the source of truth
@@ -25,6 +56,7 @@ installation or successful OAuth login for every client or user.
 
 | Plugin | Purpose | Claude catalog | Native catalog | Prerequisites and current limits |
 | --- | --- | --- | --- | --- |
+| `netconnect` | Guided setup and connection readiness checks | Listed | Listed | Skills only; host import/install still needs verification. No bundled service connection or access grant. |
 | `swarm2` | Plan, delegate and review remote coding work | Listed | Listed | Service sign-in; native loading/authentication repairs still need canonical-source verification. |
 | `sunday` | Tickets, projects and work reports | Listed | Listed | Service sign-in; portable and compatibility package checks are available. |
 | `ssh-fleet` | Fleet connection, network operations skills and Claude-specific hooks | Listed | Listed | **Private GitHub repository read access**, then service sign-in. Private package content stays in its source repository. |
@@ -155,6 +187,7 @@ it is not the same as an authenticated successful call.
 
 | Package | Where to change it |
 | --- | --- |
+| NetConnect Setup | This repository: `plugins/netconnect`. One skill source is shared by all package formats. |
 | Swarm2 | Canonical `Netconnect-NCY/swarm2-mcp`: `plugins/swarm2` and `skills/working-with-swarm2`. The publisher replaces the catalog's generated package. |
 | Sunday | This repository: `plugins/sunday`. The service application is maintained separately. |
 | SSH-Fleet | Canonical `Netconnect-NCY/ssh-fleet-mcp/claude-plugin`. `ssh-fleet-plugin` is a private generated mirror. |

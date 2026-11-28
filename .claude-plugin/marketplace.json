@@ -98,6 +98,19 @@
         "sso",
         "tickets"
       ]
+    },
+    {
+      "name": "netconnect",
+      "source": "./plugins/netconnect",
+      "description": "Guided setup for the NetConnect services you choose: inspect existing connections, follow the supported client sign-in flow, and verify a small read. Skills only; does not enable every service or grant access.",
+      "homepage": "https://github.com/Netconnect-NCY/claude-plugins",
+      "category": "productivity",
+      "tags": [
+        "netconnect",
+        "setup",
+        "onboarding",
+        "skills"
+      ]
     }
   ]
 }

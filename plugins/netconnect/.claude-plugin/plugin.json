@@ -1,0 +1,10 @@
+{
+  "name": "netconnect",
+  "version": "1.0.0",
+  "description": "Guided setup and read-only connection checks for the NetConnect services you choose. Includes the /netconnect:setup skill; no service connections are enabled automatically.",
+  "author": {
+    "name": "Netconnect-NCY",
+    "url": "https://github.com/Netconnect-NCY"
+  },
+  "homepage": "https://github.com/Netconnect-NCY/claude-plugins"
+}

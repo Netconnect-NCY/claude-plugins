@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "netconnect",
+  "version": "1.0.0",
+  "description": "Choose, connect and check the NetConnect services you need in your current AI client.",
+  "author": {
+    "name": "Netconnect-NCY",
+    "url": "https://github.com/Netconnect-NCY"
+  },
+  "homepage": "https://github.com/Netconnect-NCY/claude-plugins",
+  "repository": "https://github.com/Netconnect-NCY/claude-plugins",
+  "keywords": ["netconnect", "setup", "onboarding", "plugins", "mcp"],
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/setup/SKILL.md",
+      "interface": {
+        "displayName": "NetConnect Setup",
+        "shortDescription": "Set up NetConnect services",
+        "longDescription": "Choose the services you need, follow the supported installation and sign-in flow for your client, and check each connection with a small read-only request. Setup uses your existing accounts and service permissions.",
+        "developerName": "NetConnect",
+        "category": "Productivity",
+        "websiteURL": "https://github.com/Netconnect-NCY/claude-plugins",
+        "defaultPrompt": [
+          "Help me connect the NetConnect services I need in this client.",
+          "Check which NetConnect services are installed, signed in and ready."
+        ]
+      }
+    }
+  }
+}
