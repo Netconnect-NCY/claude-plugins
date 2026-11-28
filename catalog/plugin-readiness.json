@@ -230,6 +230,40 @@
         "read_operation": "not_tested"
       },
       "tenant_context": "A connected Odoo account or private integration does not by itself establish an installable public marketplace package."
+    },
+    {
+      "name": "netconnect",
+      "canonical_source": {
+        "repository": "https://github.com/Netconnect-NCY/claude-plugins",
+        "path": "plugins/netconnect"
+      },
+      "distribution": {
+        "kind": "local",
+        "path": "plugins/netconnect",
+        "ownership": "maintained_here",
+        "access": "public"
+      },
+      "clients": {
+        "claude_code": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": ".claude-plugin/plugin.json"
+        },
+        "codex": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": "plugin.json"
+        }
+      },
+      "cloud": {
+        "status": "skills_only_host_import_required"
+      },
+      "live_checks": {
+        "host_install": "not_tested",
+        "oauth": "not_applicable",
+        "read_operation": "not_applicable"
+      },
+      "tenant_context": "Skills-only onboarding. Discover available service connections and the caller context at runtime. Do not store account data, enable every service or grant service permissions."
     }
   ]
 }

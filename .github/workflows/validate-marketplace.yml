@@ -35,5 +35,5 @@ jobs:
           python-version: '3.12'
       - name: Validate catalog inventory and public package boundaries
         run: python3 scripts/check_marketplace.py
-      - name: Test catalog integrity and Sunday packaging
+      - name: Test catalog integrity and package contracts
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
