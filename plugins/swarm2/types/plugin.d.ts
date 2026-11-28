@@ -55,6 +55,9 @@ export type EngineWorker = { id: string; vendor: string; model: string | null; l
 /** Path-conflict rebase risk (auto mode): score 0..100, band and short reasons; an older server omits it. */
 export type ConflictRisk = { score: number; band: 'low' | 'medium' | 'high'; reasons: string[] }
 export type WaitingForPaths = { blocking_run_id: string; blocking_pattern: string | null; conflict_risk?: ConflictRisk }
+/** One start-after dependency (swarm_task_submit after): ref run:<uuid> | task:<uuid> | plan_item:<id> | pr:<number>. */
+export type WaitingForDependency = { ref: string; state: 'succeeded' | 'merged' | 'deployed'; target: 'prod' | 'dev' | null;
+  status: 'waiting' | 'met' | 'unsatisfiable' | 'overridden' }
 
 export type Run = {
   run_id: string
@@ -195,6 +198,8 @@ export type QueueEntry = {
   effort: string | null
   /** set for queued runs waiting for paths held by another run */
   waiting_for_paths: WaitingForPaths | null
+  /** set for queued runs waiting for their start-after dependencies (status_reason waiting_for_dependency); older servers omit it */
+  waiting_for_dependency?: WaitingForDependency[]
   /** waiting_quota: when it retries; else null */
   retry_at: string | null
   /** the run's created_at (age = now - since) */

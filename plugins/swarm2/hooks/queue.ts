@@ -1,4 +1,4 @@
-import type { ConflictRisk, Queue, QueueEntry, RepoQueue, WaitingForPaths } from '../types'
+import type { ConflictRisk, Queue, QueueEntry, RepoQueue, WaitingForDependency, WaitingForPaths } from '../types'
 
 export const QUEUE_MAX_REPOS = 10
 export const QUEUE_MAX_ENTRIES = 20
@@ -14,6 +14,33 @@ function paths(value: unknown): WaitingForPaths | null {
   const v = record(value)
   const id = text(v?.blocking_run_id, 64)
   return v && id ? { blocking_run_id: id, blocking_pattern: text(v.blocking_pattern, 512), ...riskOf(v.conflict_risk) } : null
+}
+
+const DEP_STATES = ['succeeded', 'merged', 'deployed'] as const
+const DEP_STATUSES = ['waiting', 'met', 'unsatisfiable', 'overridden'] as const
+/** Well-formed start-after dependencies (at most 10), else nothing: older servers omit the field. */
+export function dependenciesOf(value: unknown): { waiting_for_dependency?: WaitingForDependency[] } {
+  if (!Array.isArray(value)) return {}
+  const deps = value.slice(0, 10).flatMap((x): WaitingForDependency[] => {
+    const d = record(x)
+    const ref = text(d?.ref, 80)
+    const state = DEP_STATES.find(s => s === d?.state)
+    const status = DEP_STATUSES.find(s => s === d?.status)
+    if (!d || !ref || !state || !status) return []
+    return [{ ref, state, target: d.target === 'prod' || d.target === 'dev' ? d.target : null, status }]
+  })
+  return deps.length ? { waiting_for_dependency: deps } : {}
+}
+
+/** "waiting for pr:512 deployed (prod), run:1a2b3c4d succeeded": what a gated run still waits for (met ones are left out). */
+export function dependencyLine(deps: readonly WaitingForDependency[] | undefined): string | null {
+  const open = (deps ?? []).filter(d => d.status !== 'met' && d.status !== 'overridden')
+  if (!open.length) return deps?.length ? 'dependencies met; starts shortly' : null
+  const one = (d: WaitingForDependency) => {
+    const ref = d.ref.replace(/^(run|task):([0-9a-f]{8})[0-9a-f-]*$/i, '$1:$2')
+    return `${ref} ${d.state}${d.target ? ` (${d.target})` : ''}${d.status === 'unsatisfiable' ? ' — can never be met' : ''}`
+  }
+  return `waiting for ${open.map(one).join(', ')}`
 }
 
 /** A well-formed conflict_risk (score 0..100, band, up to 4 short reasons), else nothing: older servers omit it. */
@@ -36,7 +63,7 @@ function entry(value: unknown): QueueEntry | null {
   return {
     position: count(v.position), run_id, title: text(v.title, 120), status, status_reason: text(v.status_reason, 300),
     requester: text(v.requester, 120), mine: v.mine === true, provider: text(v.provider, 120), model: text(v.model, 120),
-    effort: text(v.effort, 40), waiting_for_paths: paths(v.waiting_for_paths), retry_at: time(v.retry_at), since,
+    effort: text(v.effort, 40), waiting_for_paths: paths(v.waiting_for_paths), ...dependenciesOf(v.waiting_for_dependency), retry_at: time(v.retry_at), since,
   }
 }
 

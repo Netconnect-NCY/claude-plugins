@@ -35,6 +35,26 @@ swarm_task_submit({
 - `paths` (≤ 50 globs) claims the files the run may change. Files changed outside them fail the run (`out_of_scope`); Path overlap now QUEUES the run instead of refusing it: the submit is accepted with status `queued`, `status_reason: waiting_for_paths` and `waiting_for_paths: {blocking_run_id, path, blocking_pattern}` (reason: waiting for paths held by run X). Do NOT resubmit, cancel-and-retry or wait to submit: it starts automatically, first come first served per repository, once the paths are free, from the CURRENT base branch head (never stacked on the blocking run's branch). A waiting run holds no pod, account lease or org run slot; `swarm_run_get` shows the wait, `swarm_run_cancel` cancels it, and it fails with `path_wait_expired` after the server's maximum wait. `path_conflict` remains only for a full waiting queue (per repository) and with `wait_for_paths:false`, which restores the immediate refusal. A running Task Engine plan also reserves the paths of its blocks not yet started (own plus inherited paths) until the task ends: an overlapping submit waits on it (the blocker is the plan's latest run). `swarm_ci_optimize` queues the same way. Resumes (`swarm_run_resume`) and Task Engine block runs are never refused for an overlap: they wait with priority (only for runs HOLDING the paths, never behind waiting submits or plan reservations) and a resumed run then starts from its recorded seed, not from the base head. Older plugin versions that only know `queued` keep working and show a queued run.
 - Once validation and repository-access checks pass, the call durably returns `{ run_id, status: "queued", branch }` without waiting for execution. Record the `run_id` in a `swarm_checkpoint` handoff.
 
+### Start after other work (`after`)
+
+Work that must wait for other work ("do X after #512 is deployed", "after run R merges", "…and 24 h passed") is submitted NOW with `after`, not parked in a local TODO. This is logical ordering; overlapping files already queue on their own.
+
+```
+swarm_task_submit({
+  repo, goal, acceptance_command, paths, idempotency_key,
+  after: [
+    { ref: "pr:512", state: "deployed", target: "prod", after_hours: 24 },   // #512 live on prod for 24 h
+    { ref: "run:<uuid>", state: "merged" }                                  // and that run's PR merged
+  ]
+})
+```
+
+- `ref`: `run:<uuid>` (follows its resumes), `task:<uuid>` (a planner task's plan run / delivery), `plan_item:<id>` (runs linked to the item) or `pr:<number>` (a PR Swarm2 published or a recorded human merge). Same project only; at most 10 entries.
+- `state`: `succeeded`, `merged` or `deployed` (a succeeded deployment on `target` `prod` (default) or `dev` whose live commit contains the merge). A PR has no `succeeded`. `after_hours` (0–720) is a time-only soak after the state was reached.
+- Unless everything is already met, the run is accepted with `status: queued`, `status_reason: waiting_for_dependency` and `waiting_for_dependency: [{ref, state, target, status, since, ready_at}]`. It claims NO paths and holds no worker or account while waiting. Do NOT resubmit; `swarm_run_get` shows the wait, `swarm_run_cancel` cancels it. Once released it claims its paths normally (it may then show `waiting_for_paths`) and starts from the base branch head, which must contain every merged dependency.
+- A dependency that fails, is cancelled, whose PR closes unmerged or whose deploy is rolled back becomes `unsatisfiable`: the run keeps waiting and an attention item opens. Tell the human; an owner or maintainer can release it with `swarm_run_dependency_override({ run_id, reason })`, or cancel it. After the server's maximum wait (default 14 days) it fails with `dependency_wait_expired`.
+- Refused with `invalid_input`: an unknown ref (or one of another project), a dependency that can already never be met, `target` without `deployed`, more than 10 entries, `after` with `wait_for_paths: false`.
+
 ### Server planner
 
 Projects with the Task Engine switch on can hand planning to the server. You send only a free-text plan — no blocks, no difficulty, no acceptance commands; the server-side planner AI produces those, and the existing engine then runs the blocks. With the switch off, every plan tool is refused with `task_engine_disabled`. On a `plan_only` project this flow is the way for a developer to get work done (non-owner `swarm_task_submit` stays refused with `plan_only_project`).
@@ -61,4 +81,4 @@ A durable `{run_id, status: "queued", branch}` is submission evidence only. Save
 
 ## Recovery
 
-For `waiting_for_paths`, leave the accepted run queued; do not resubmit or cancel-and-retry. For `path_conflict`, inspect queue capacity or an explicit `wait_for_paths:false`. For a terminal `path_wait_expired`, reassess current scope and authorization before a new request. For a missing GitHub App permission, direct the human to an organisation owner; never change permissions yourself. For `plan_only_client_required`, use [client gate recovery](credentials-client-access.md#recovery). A failed initial planner is terminal `plan_failed`; a failed comment round retains the previous plan. Resolve the reported cause before requesting more work.
+For `waiting_for_paths` or `waiting_for_dependency`, leave the accepted run queued; do not resubmit or cancel-and-retry. For an `unsatisfiable` dependency, report it; only an owner or maintainer decides an override. For `path_conflict`, inspect queue capacity or an explicit `wait_for_paths:false`. For a terminal `path_wait_expired`, reassess current scope and authorization before a new request. For a missing GitHub App permission, direct the human to an organisation owner; never change permissions yourself. For `plan_only_client_required`, use [client gate recovery](credentials-client-access.md#recovery). A failed initial planner is terminal `plan_failed`; a failed comment round retains the previous plan. Resolve the reported cause before requesting more work.

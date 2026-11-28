@@ -18,7 +18,7 @@ import { buildDoctorReport, formatDoctorReport, gatherDoctor } from './doctor'
 import { accountUsersLabel } from './account-users'
 import { cooldownProgress, durationLeft, nextFixedReset } from './window-status'
 import { baselineText, costFootnote, runCostText, todayCostText } from './cost'
-import { parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
+import { dependencyLine, parseQueue, queueRouting, queueStatus, queueTitle } from './queue'
 import { autopilotRowLabel, autopilotStatusPart } from './autopilot'
 import { parseRouting, routingLine } from './routing'
 import { isDefaultSetting, parseSettings, settingLine, settingsStatusParts } from './settings'
@@ -32,7 +32,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.124'
+export const PLUGIN_VERSION = '0.6.126'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -859,6 +859,7 @@ export const register: Register = (on, options) => {
       const waits = q.waiting_for_paths
         ? `waits for run ${short(q.waiting_for_paths.blocking_run_id)}${q.waiting_for_paths.blocking_pattern ? ` · ${q.waiting_for_paths.blocking_pattern}` : ''}${riskText(q.waiting_for_paths.conflict_risk, 'waits')}`
         : q.status === 'waiting_quota' ? (q.retry_at ? `retries ${clock(q.retry_at)}` : 'automatic retry pending')
+        : q.status_reason === 'waiting_for_dependency' ? (dependencyLine(q.waiting_for_dependency) ?? 'waiting for its dependencies')
         : q.status_reason && q.status_reason !== 'waiting_for_paths' ? q.status_reason : null
       return (
         <Box flexDirection="column">
