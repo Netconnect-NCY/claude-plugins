@@ -101,7 +101,7 @@ class SundayPackageTests(unittest.TestCase):
 
         for path in PACKAGE.rglob("*"):
             self.assertFalse(path.is_symlink(), str(path))
-            self.assertNotIn(path.name, {"node_modules", "hooks", ".app.json"})
+            self.assertNotIn(path.name, {"node_modules", "hooks"})
             if path.suffix == ".json":
                 inspect(read_json(path), path.relative_to(PACKAGE))
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "sunday",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Work with Sunday tickets, projects and reports using your own NetConnect account and Sunday permissions.",
   "author": {
     "name": "Netconnect-NCY",
@@ -9,7 +9,14 @@
   },
   "homepage": "https://sunday.work/how-tickets-work",
   "repository": "https://github.com/Netconnect-NCY/claude-plugins",
-  "keywords": ["sunday", "netconnect", "tickets", "projects", "mcp", "keycloak"],
+  "keywords": [
+    "sunday",
+    "netconnect",
+    "tickets",
+    "projects",
+    "mcp",
+    "keycloak"
+  ],
   "extensions": {
     "com.openai": {
       "interface": {
