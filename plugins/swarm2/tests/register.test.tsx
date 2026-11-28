@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { ConfigRow, On } from 'claude-code'
 
 import { flushPluginReports } from '../hooks/plugin-report'
-import { PLUGIN_VERSION } from '../hooks/register'
+import { PLUGIN_VERSION, consumptionLine } from '../hooks/register'
 
 // the host test runtime's timer, reached through globalThis (the plugin's type contract declares no ambient globals)
 const sleep = (ms: number) => new Promise(r => (globalThis as unknown as { setTimeout: (f: (v?: unknown) => void, ms: number) => unknown }).setTimeout(r, ms))
@@ -810,6 +810,33 @@ test('expired window, stale account, not-measured and no-figure-yet strings; an 
   await has(ui, /usage not measured for this provider/)
   expect((await ui.findAll({ type: 'Text', text: /^no usage figure yet$/ })).length).toBe(2) // the inner Text, not the row around it
   await ui.unmount()
+})
+
+test('a not_measurable account with consumption shows what it used (runs, tokens), never a percentage; malformed or absent falls back', async ($, on) => {
+  const ago2h = new Date(Date.now() - 2 * 3_600_000).toISOString()
+  const base = CONTROL.accounts[0]!
+  const consumption = { usage_kind: 'consumed', last_24h: { runs: 12, input_tokens: 1_200_000, output_tokens: 200_000, cached_input_tokens: 90_000 },
+    last_7d: { runs: 40, input_tokens: 4_000_000, output_tokens: 1_000_000, cached_input_tokens: null }, last_used_at: ago2h }
+  const control = {
+    ...CONTROL,
+    accounts: [
+      { ...base, id: 'g1', label: 'Agy', provider: 'antigravity', kind: 'subscription_token', measurement: 'not_measurable', windows: [], consumption },
+      { ...base, id: 'g2', label: 'Agy bad', provider: 'antigravity', kind: 'subscription_token', measurement: 'not_measurable', windows: [],
+        consumption: { usage_kind: 'consumed', last_24h: { runs: -1 }, last_7d: null, last_used_at: null } },
+    ],
+  }
+  engine(on, { control, status: { runs: [], deployments: [], messages: [] } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await command($, 'swarm2')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await has(ui, /Antigravity: 12 runs · 1\.4M tok \(24 h\) · 40 runs · 5\.0M tok \(7 d\) · last 2h00 ago/)
+  await has(ui, /usage not measured for this provider/) // the malformed one
+  await paneHas(ui, /Antigravity: .*%/, false)
+  await ui.unmount()
+  expect(consumptionLine({ provider: 'antigravity', consumption: { ...consumption, last_24h: { ...consumption.last_24h, runs: 1 }, last_used_at: null } } as never))
+    .toBe('Antigravity: 1 run · 1.4M tok (24 h) · 40 runs · 5.0M tok (7 d)')
+  expect(consumptionLine({ provider: 'antigravity' } as never)).toBeNull()
+  expect(consumptionLine({ provider: 'x', consumption: { ...consumption, usage_kind: 'pct' } } as never)).toBeNull()
 })
 
 test('cost: a run shows tokens and API-equivalent cost (~ when partial, cost unknown when null), today shows unknown not $0.00, the label is the footnote', async ($, on) => {

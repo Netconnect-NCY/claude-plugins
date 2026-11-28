@@ -13,6 +13,10 @@ export type UsageWindow = {
   observed_at?: string | null
 }
 
+/** Metered attempts and tokens of one window (from ai_usage); cached input is counted separately, null when none was reported. */
+export type ConsumptionWindow = { runs: number; input_tokens: number; output_tokens: number; cached_input_tokens: number | null }
+export type AccountConsumption = { usage_kind: 'consumed'; last_24h: ConsumptionWindow; last_7d: ConsumptionWindow; last_used_at: string | null }
+
 export type Account = {
   id: string
   provider: string
@@ -35,6 +39,9 @@ export type Account = {
   observed_at: string | null
   /** Whether a usage measurement exists for this provider/kind; absent on older servers. */
   measurement?: 'measured' | 'not_measurable'
+  /** What a not_measurable account (e.g. Antigravity, a flat subscription) consumed through Swarm2: "used", never "% of limit".
+   * Present only when it was metered in the viewer's organisation; absent otherwise and on older servers. */
+  consumption?: AccountConsumption
   /** True when the newest measurement is older than 6 hours; absent on older servers. */
   stale?: boolean
   in_use: number

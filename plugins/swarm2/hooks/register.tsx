@@ -32,7 +32,7 @@ import {
 } from './toasts'
 
 /** Keep equal to .claude-plugin/plugin.json `version` (a test checks it); shown in the pane's footer. */
-export const PLUGIN_VERSION = '0.6.107'
+export const PLUGIN_VERSION = '0.6.116'
 
 /** PROD for the production host; custom servers show their configured host. */
 export function environmentLabel(base: string): { name: string; host: string } {
@@ -163,6 +163,29 @@ function tokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`
   return String(n)
+}
+
+const PROVIDER_NAMES: Record<string, string> = { antigravity: 'Antigravity', deepseek: 'DeepSeek', xai: 'xAI', qwen: 'Qwen', anthropic: 'Claude', openai: 'Codex', glm: 'GLM', kimi: 'Kimi', gemini: 'Gemini' }
+const nonNegative = (v: unknown): number | null => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null
+
+/** The "used" line of an account without a usage measurement (e.g. Antigravity), from the server's `consumption` field:
+ * metered runs and tokens (input + output) of the last 24 h, then 7 d, then the last use. Never a percentage of a limit.
+ * Null when the server sent no well-formed consumption (an older server, or a measured account). */
+export function consumptionLine(a: Pick<Account, 'provider' | 'consumption'>, now = Date.now()): string | null {
+  const c = a.consumption as unknown as Record<string, unknown> | undefined
+  if (!c || typeof c !== 'object' || c.usage_kind !== 'consumed') return null
+  const win = (v: unknown) => {
+    const w = v as Record<string, unknown> | null | undefined
+    const runs = nonNegative(w?.runs), input = nonNegative(w?.input_tokens), output = nonNegative(w?.output_tokens)
+    return runs === null || input === null || output === null ? null : { runs, tok: input + output }
+  }
+  const day = win(c.last_24h), week = win(c.last_7d)
+  if (!day || !week) return null
+  const name = PROVIDER_NAMES[a.provider] ?? a.provider
+  const runs = (n: number) => `${n} run${n === 1 ? '' : 's'}`
+  const last = typeof c.last_used_at === 'string' && Number.isFinite(Date.parse(c.last_used_at))
+    ? ` · last ${ago(new Date(Math.min(Date.parse(c.last_used_at), now)).toISOString())} ago` : ''
+  return `${name}: ${runs(day.runs)} · ${tokens(day.tok)} tok (24 h) · ${runs(week.runs)} · ${tokens(week.tok)} tok (7 d)${last}`
 }
 
 function windowLabel(w: UsageWindow): string {
@@ -692,7 +715,12 @@ export const register: Register = (on, options) => {
         </Text>
         <Text wrap="truncate-end" dimColor={a.stale === true}>
           {'  '}
-          {a.windows.length === 0 && <Text dimColor>{a.measurement === 'not_measurable' ? 'usage not measured for this provider' : 'no usage figure yet'}</Text>}
+          {a.windows.length === 0 && (() => {
+            // A not_measurable account shows what it used (runs and tokens), never a percentage of a limit.
+            const used = a.measurement === 'not_measurable' ? consumptionLine(a) : null
+            return used ? <Text dimColor>{used}</Text>
+              : <Text dimColor>{a.measurement === 'not_measurable' ? 'usage not measured for this provider' : 'no usage figure yet'}</Text>
+          })()}
           {a.windows.map(w => w.expired === true ? (
             // The window has reset since it was measured: its quota is full again. A fixed (daily/weekly) window shows
             // its next reset; a 5 h window starts again on the next use.
