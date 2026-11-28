@@ -1,0 +1,39 @@
+name: Validate marketplace
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.agents/plugins/marketplace.json'
+      - '.claude-plugin/marketplace.json'
+      - 'catalog/**'
+      - 'plugins/**'
+      - 'scripts/check_marketplace.py'
+      - 'tests/**'
+      - '.github/workflows/validate-marketplace.yml'
+  pull_request:
+    paths:
+      - '.agents/plugins/marketplace.json'
+      - '.claude-plugin/marketplace.json'
+      - 'catalog/**'
+      - 'plugins/**'
+      - 'scripts/check_marketplace.py'
+      - 'tests/**'
+      - '.github/workflows/validate-marketplace.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate catalog inventory and public package boundaries
+        run: python3 scripts/check_marketplace.py
+      - name: Test catalog integrity and Sunday packaging
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v

@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "description": "Maintainer inventory. Catalog presence and compatible package structure are not proof of a user's source access, cloud installation, OAuth login or service permissions.",
+  "compatibility_sources": [
+    "https://developers.openai.com/plugins/build/plugins",
+    "https://learn.chatgpt.com/docs/enterprise/plugin-management",
+    "https://github.com/openai/codex/blob/065e18b04021008e2e7d504db8dc50275f589f73/codex-rs/ext/mcp/src/plugin/provider.rs"
+  ],
+  "catalogs": {
+    "claude_code": {
+      "name": "netconnect",
+      "path": ".claude-plugin/marketplace.json"
+    },
+    "codex": {
+      "name": "netconnect-claude-plugins",
+      "path": ".agents/plugins/marketplace.json"
+    }
+  },
+  "plugins": [
+    {
+      "name": "swarm2",
+      "canonical_source": {
+        "repository": "https://github.com/Netconnect-NCY/swarm2-mcp",
+        "path": "plugins/swarm2",
+        "skill_path": "skills/working-with-swarm2"
+      },
+      "distribution": {
+        "kind": "local",
+        "path": "plugins/swarm2",
+        "ownership": "generated",
+        "publisher": ".github/workflows/plugin-mirror.yml in the canonical repository",
+        "access": "public",
+        "mcp_config": ".mcp.json"
+      },
+      "clients": {
+        "claude_code": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": ".claude-plugin/plugin.json"
+        },
+        "codex": {
+          "listed": true,
+          "package_status": "repairs_pending",
+          "manifest": ".claude-plugin/plugin.json",
+          "reason": "Existing compatible-format listing; native loading, OAuth metadata and publication repairs require canonical-source verification."
+        }
+      },
+      "cloud": {
+        "status": "account_or_workspace_specific"
+      },
+      "live_checks": {
+        "oauth": "not_tested",
+        "read_operation": "not_tested"
+      },
+      "tenant_context": "Read the authenticated user's capabilities, project context and organization/project instructions from MCP. Keep deployment-specific policy out of reusable instructions."
+    },
+    {
+      "name": "sunday",
+      "canonical_source": {
+        "repository": "https://github.com/Netconnect-NCY/claude-plugins",
+        "path": "plugins/sunday"
+      },
+      "distribution": {
+        "kind": "local",
+        "path": "plugins/sunday",
+        "ownership": "maintained_here",
+        "access": "public",
+        "mcp_config": ".mcp.json"
+      },
+      "clients": {
+        "claude_code": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": ".claude-plugin/plugin.json"
+        },
+        "codex": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": ".codex-plugin/plugin.json"
+        }
+      },
+      "cloud": {
+        "status": "account_or_workspace_specific"
+      },
+      "live_checks": {
+        "oauth": "not_tested",
+        "read_operation": "not_tested"
+      },
+      "tenant_context": "Use get_me, list_docs and get_doc from the authenticated connection for identity and service guidance."
+    },
+    {
+      "name": "ssh-fleet",
+      "canonical_source": {
+        "repository": "https://github.com/Netconnect-NCY/ssh-fleet-mcp",
+        "path": "claude-plugin"
+      },
+      "distribution": {
+        "kind": "url",
+        "url": "https://github.com/Netconnect-NCY/ssh-fleet-plugin.git",
+        "ownership": "generated",
+        "access": "github_repository_permission_required",
+        "privacy": "private_source_do_not_copy_into_public_catalog"
+      },
+      "clients": {
+        "claude_code": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": ".claude-plugin/plugin.json"
+        },
+        "codex": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": ".codex-plugin/plugin.json"
+        }
+      },
+      "cloud": {
+        "status": "account_or_workspace_specific"
+      },
+      "live_checks": {
+        "oauth": "not_tested",
+        "read_operation": "not_tested"
+      },
+      "tenant_context": "Resolve fleet identity, permissions, memory and operational context through the authenticated service. Private source content remains private."
+    },
+    {
+      "name": "ssh-fleet-connect",
+      "canonical_source": {
+        "repository": "https://github.com/Netconnect-NCY/claude-plugins",
+        "path": "plugins/ssh-fleet-connect"
+      },
+      "distribution": {
+        "kind": "local",
+        "path": "plugins/ssh-fleet-connect",
+        "ownership": "maintained_here",
+        "access": "public",
+        "mcp_config": ".mcp.json"
+      },
+      "clients": {
+        "claude_code": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": ".claude-plugin/plugin.json"
+        },
+        "codex": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": ".claude-plugin/plugin.json"
+        }
+      },
+      "cloud": {
+        "status": "account_or_workspace_specific"
+      },
+      "live_checks": {
+        "oauth": "not_tested",
+        "read_operation": "not_tested"
+      },
+      "alternatives": [
+        "ssh-fleet"
+      ],
+      "tenant_context": "Connection only. OAuth and the server determine the user's access. Do not install this and ssh-fleet for the same connection."
+    },
+    {
+      "name": "golden-path",
+      "canonical_source": {
+        "repository": "https://github.com/Netconnect-NCY/golden-path",
+        "path": "plugin"
+      },
+      "distribution": {
+        "kind": "git-subdir",
+        "url": "https://github.com/Netconnect-NCY/golden-path",
+        "path": "plugin",
+        "ownership": "canonical",
+        "access": "github_repository_permission_required",
+        "privacy": "private_source_do_not_copy_into_public_catalog"
+      },
+      "clients": {
+        "claude_code": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": ".claude-plugin/plugin.json"
+        },
+        "codex": {
+          "listed": true,
+          "package_status": "compatible",
+          "manifest": ".codex-plugin/plugin.json",
+          "source_sha": "53da61a45eb7cb092e29c83398f4ca86e3478547"
+        }
+      },
+      "cloud": {
+        "status": "not_published_by_this_catalog"
+      },
+      "live_checks": {
+        "oauth": "not_applicable",
+        "read_operation": "not_tested"
+      },
+      "tenant_context": "Discover organization policy and integration targets at runtime from authorized context. The source remains private; no MCP connection or credentials are bundled.",
+      "static_checks": {
+        "status": "package_validated",
+        "release": "0.7.0",
+        "scope": "Self-contained generic skills-only package; native catalog pins the reviewed source release."
+      }
+    },
+    {
+      "name": "odoo",
+      "canonical_source": {
+        "status": "private_mapping_not_published"
+      },
+      "distribution": {
+        "kind": "none",
+        "ownership": "pending",
+        "access": "not_packaged"
+      },
+      "clients": {
+        "claude_code": {
+          "listed": false,
+          "package_status": "not_packaged",
+          "reason": "A generic, validated distributable package is pending."
+        },
+        "codex": {
+          "listed": false,
+          "package_status": "not_packaged",
+          "reason": "A generic, validated distributable package is pending."
+        }
+      },
+      "cloud": {
+        "status": "account_or_workspace_specific"
+      },
+      "live_checks": {
+        "oauth": "not_tested",
+        "read_operation": "not_tested"
+      },
+      "tenant_context": "A connected Odoo account or private integration does not by itself establish an installable public marketplace package."
+    }
+  ]
+}
